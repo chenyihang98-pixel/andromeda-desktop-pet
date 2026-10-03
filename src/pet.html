@@ -8,6 +8,8 @@
 <body>
 <canvas id="pet" width="192" height="208" tabindex="0" role="button" aria-label="星璇：拖动移动，双击或按回车打开设置，右键打开菜单"></canvas>
 <button id="settings-button" aria-label="打开设置" title="设置">⋯</button>
+<button id="dock-handle" hidden aria-label="星璇已收起：悬停展开，点击或按回车解除停靠" title="悬停展开 · 点击或按回车解除停靠"><span aria-hidden="true">✦</span></button>
+<span id="dock-indicator" hidden title="拖向屏幕内侧或按 Esc 解除停靠">✦ <span>停靠中 · Esc 解除</span></span>
 <p id="error" role="alert" hidden>星璇的素材未能载入，请重新解压完整压缩包</p>
 <script type="module" src="pet.mjs"></script>
 </body></html>

@@ -1,7 +1,7 @@
 {
   "name": "andromeda-desktop-pet",
   "productName": "Andromeda",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "一款开发中的桌宠",
   "private": true,
   "license": "UNLICENSED",
@@ -65,8 +65,9 @@
       "target": [
         "zip"
       ],
-      "signAndEditExecutable": false,
-      "artifactName": "Andromeda-${version}-windows-${arch}-portable.${ext}"
+      "artifactName": "Andromeda-${version}-windows-${arch}-portable.${ext}",
+      "signExecutable": false,
+      "icon": "assets/icon.png"
     },
     "linux": {
       "target": [
@@ -74,11 +75,20 @@
       ],
       "category": "Utility",
       "icon": "assets/icon.png"
-    }
+    },
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "copyright": "See NOTICE.md for rights and third-party notices"
   },
   "overrides": {
     "app-builder-lib": {
       "@electron/get": "5.1.0"
     }
+  },
+  "author": {
+    "name": "Andromeda project"
   }
 }

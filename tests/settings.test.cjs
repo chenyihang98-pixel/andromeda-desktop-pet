@@ -14,7 +14,7 @@ const primary = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 const left = { workArea: { x: -1280, y: 0, width: 1280, height: 984 } };
 
 test('default settings are quiet, medium sized, with no cursor gaze', () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { scale: 1.25, motion: 'quiet', gaze: false, alwaysOnTop: true });
+  assert.deepEqual(DEFAULT_SETTINGS, { scale: 1.25, motion: 'quiet', gaze: false, alwaysOnTop: true, edgeDock: true, globalGaze: false, clickThrough: false });
   assert.ok(Object.isFrozen(DEFAULT_SETTINGS));
   assert.deepEqual(sanitizeSettings(null), DEFAULT_SETTINGS);
 });
@@ -26,7 +26,7 @@ test('stored settings sanitize invalid fields without carrying unknown keys', ()
   assert.equal(sanitizeSettings({ scale: NaN }).scale, 1.25);
   assert.equal(sanitizeSettings({ scale: Infinity }).scale, 1.25);
   assert.deepEqual(sanitizeSettings({ scale: 1.456, motion: 'still', gaze: true, alwaysOnTop: false }), {
-    scale: 1.46, motion: 'still', gaze: true, alwaysOnTop: false,
+    ...DEFAULT_SETTINGS, scale: 1.46, motion: 'still', gaze: true, alwaysOnTop: false,
   });
 });
 
@@ -112,7 +112,7 @@ test('settings store round-trips a sanitized complete record', (t) => {
   t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
   const store = createSettingsStore(path.join(folder, 'profile'));
   assert.deepEqual(store.load().settings, DEFAULT_SETTINGS);
-  const record = { version: 1, settings: { scale: 1.5, motion: 'still', gaze: false, alwaysOnTop: false }, position: { x: -123, y: 456 } };
+  const record = { version: 1, settings: { ...DEFAULT_SETTINGS, scale: 1.5, motion: 'still', gaze: false, alwaysOnTop: false }, position: { x: -123, y: 456 } };
   assert.deepEqual(store.save(record), record);
   assert.deepEqual(store.load(), record);
   assert.deepEqual(fs.readdirSync(path.dirname(store.filename)), ['settings.json']);
@@ -142,4 +142,15 @@ test('atomic replacement failure leaves old settings intact and removes temp fil
   } finally { fs.renameSync = rename; }
   assert.deepEqual(store.load(), original);
   assert.deepEqual(fs.readdirSync(folder), ['settings.json']);
+});
+
+test('v0.1 settings migrate safely and new toggles reject non-boolean values', () => {
+  const old = sanitizeRecord({ version: 1, settings: { scale: 1, gaze: true }, position: { x: 20, y: 40 } });
+  assert.equal(old.settings.edgeDock, true);
+  assert.equal(old.settings.globalGaze, false);
+  assert.equal(old.settings.clickThrough, false);
+  for (const key of ['edgeDock', 'globalGaze', 'clickThrough']) {
+    assert.deepEqual(validateSettingsPatch({ [key]: true }), { [key]: true });
+    assert.throws(() => validateSettingsPatch({ [key]: 'true' }), TypeError);
+  }
 });

@@ -30,7 +30,7 @@ function eventTarget(extra = {}) {
   }, extra);
 }
 
-async function createRenderer({motion = 'quiet', gaze = false, reduced = false, apiAvailable = true, failure = null} = {}) {
+async function createRenderer({motion = 'quiet', gaze = false, globalGaze = false, reduced = false, apiAvailable = true, failure = null, dock = null, visible = true, apiFailure = null} = {}) {
   let now = 0, serial = 0;
   const timers = new Map(), calls = [], draws = [], errors = [];
   const classes = new Set();
@@ -41,23 +41,29 @@ async function createRenderer({motion = 'quiet', gaze = false, reduced = false, 
     getBoundingClientRect: () => ({left: 0, top: 0, width: 192, height: 208}),
     setPointerCapture(id) { calls.push(['capture', id]); },
   });
-  const button = eventTarget(), error = {hidden: true};
-  const elements = {'#pet': canvas, '#settings-button': button, '#error': error};
-  const document = eventTarget({hidden: false, querySelector: (selector) => elements[selector]});
+  const bodyClasses = new Set();
+  const body = {dataset: {}, classList: {toggle(name, value) { if (value) bodyClasses.add(name); else bodyClasses.delete(name); }}};
+  const button = eventTarget(), handle = eventTarget(), indicator = {}, error = {hidden: true};
+  const elements = {'#pet': canvas, '#settings-button': button, '#dock-handle': handle, '#dock-indicator': indicator, '#error': error};
+  const document = eventTarget({body, hidden: false, querySelector: (selector) => elements[selector]});
   const media = eventTarget({matches: reduced});
-  let state = {settings: {motion, gaze, scale: 1.25, alwaysOnTop: true}};
-  let onState, onAction;
+  let state = {settings: {motion, gaze, globalGaze, edgeDock: true, clickThrough: false, scale: 1.25, alwaysOnTop: true}, visible, dock, trayAvailable: true, persistenceError: null, version: '0.2.0', clickThroughActive: false};
+  let onState, onAction, onGaze;
+  const record = (name) => { calls.push([name]); if (apiFailure === name) return Promise.reject(new Error('simulated command failure')); }; 
   const api = {
     onState(fn) { onState = fn; return () => {}; },
     onAction(fn) { onAction = fn; return () => {}; },
+    onGaze(fn) { onGaze = fn; return () => {}; },
     async getState() {
       if (failure === 'state') throw new Error('simulated IPC failure');
       return state;
     },
-    showSettings() { calls.push(['settings']); },
-    startDrag() { calls.push(['startDrag']); },
-    drag() { calls.push(['drag']); },
-    endDrag() { calls.push(['endDrag']); },
+    showSettings() { return record('settings'); },
+    startDrag() { return record('startDrag'); },
+    drag() { return record('drag'); },
+    endDrag() { return record('endDrag'); },
+    cancelDrag() { return record('cancelDrag'); },
+    undock() { return record('undock'); },
   };
   const window = eventTarget({andromeda: apiAvailable ? api : undefined});
   const setTimeout = (fn, delay) => {
@@ -92,9 +98,11 @@ async function createRenderer({motion = 'quiet', gaze = false, reduced = false, 
     {error: (...args) => errors.push(args)},
   );
   return {
-    canvas, button, error, document, media, window, clock, calls, draws, errors, classes,
+    canvas, button, handle, indicator, bodyClasses, error, document, media, window, clock, calls, draws, errors, classes,
     action: (value) => onAction?.(value),
-    update(patch) { state = {settings: {...state.settings, ...patch}}; onState?.(state); },
+    update(patch) { state = {...state, settings: {...state.settings, ...patch}}; onState?.(state); },
+    state(patch) { state = {...state, ...patch}; onState?.(state); },
+    gaze: (point) => onGaze?.(point),
     cell: () => [Number(canvas.dataset.row), Number(canvas.dataset.column)],
     visible(value) { document.hidden = !value; document.emit('visibilitychange'); },
     reduce(value) { media.matches = value; media.emit('change'); },
@@ -230,12 +238,13 @@ test('dragging cancels playback, captures pointer, sends bounded bridge methods,
   assert.equal(r.clock.nextDelay(), 45000);
 });
 
-test('pointer cancellation, lost capture, and blur each finish an interrupted drag once', async () => {
+test('pointer cancellation, lost capture, and blur cancel instead of committing a dock', async () => {
   for (const event of ['pointercancel', 'lostpointercapture', 'blur']) {
     const r = await createRenderer();
     r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
     (event === 'blur' ? r.window : r.canvas).emit(event);
-    assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 1, event);
+    assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0, event);
+    assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1, event);
     assert.equal(r.classes.has('dragging'), false, event);
     assert.equal(r.clock.pending(), 1, event);
   }
@@ -266,4 +275,183 @@ test('browser-only renderer fallback schedules quiet playback without the native
   assert.equal(r.clock.nextDelay(), 45000);
   r.button.emit('click');
   assert.equal(r.calls.length, 0);
+});
+
+test('metadata-only and size/always-on-top settings updates preserve quiet deadlines and active frames', async () => {
+  const r = await createRenderer();
+  r.clock.advance(5000);
+  r.state({persistenceError: 'disk full', trayAvailable: false});
+  r.update({scale: 1.5, alwaysOnTop: false, edgeDock: false, clickThrough: true});
+  assert.equal(r.clock.nextDelay(), 40000);
+  r.action('wave'); r.clock.advance(210);
+  r.state({persistenceError: null, trayAvailable: true, clickThroughActive: true});
+  assert.deepEqual(r.cell(), [3, 1]);
+  assert.equal(r.clock.nextDelay(), 210);
+  r.clock.advance(840);
+  assert.deepEqual(r.cell(), [0, 0]);
+  assert.equal(r.clock.nextDelay(), 45000);
+});
+
+test('global gaze supersedes local gaze, has no idle timer, and resumes on the next sample after an action', async () => {
+  const r = await createRenderer({gaze: true, globalGaze: true});
+  assert.equal(r.clock.pending(), 0);
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [9, 4]);
+  r.canvas.emit('pointerenter');
+  r.canvas.emit('pointermove', {clientX: 96, clientY: 0});
+  r.canvas.emit('pointerleave');
+  assert.deepEqual(r.cell(), [9, 4]);
+  r.action('wave');
+  r.gaze({x: -100, y: 0});
+  r.clock.advance(210);
+  r.canvas.emit('pointerleave');
+  assert.deepEqual(r.cell(), [3, 1]);
+  r.clock.advance(840);
+  assert.deepEqual(r.cell(), [0, 0]);
+  r.gaze({x: -100, y: 0});
+  assert.deepEqual(r.cell(), [10, 4]);
+  assert.equal(r.clock.pending(), 0);
+  r.update({globalGaze: false});
+  assert.equal(r.clock.nextDelay(), 45000);
+  r.canvas.emit('pointerenter');
+  r.canvas.emit('pointermove', {clientX: 96, clientY: 0});
+  assert.deepEqual(r.cell(), [9, 0]);
+});
+
+test('global gaze rejects invalid payloads and respects reduced motion, hidden state and dragging', async () => {
+  const r = await createRenderer({globalGaze: true});
+  for (const value of [null, undefined, {x: NaN, y: 0}, {x: 0, y: Infinity}, {x: '100', y: 0}]) r.gaze(value);
+  assert.deepEqual(r.cell(), [0, 0]);
+  r.reduce(true); r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [0, 0]);
+  r.action('wave'); r.gaze({x: 100, y: 0});
+  r.canvas.emit('pointerleave');
+  assert.deepEqual(r.cell(), [3, 0]);
+  r.clock.advance(900); r.reduce(false);
+  r.state({visible: false});
+  const before = r.draws.length;
+  r.gaze({x: 100, y: 0}); r.action('jump');
+  assert.equal(r.draws.length, before);
+  assert.equal(r.clock.pending(), 0);
+  r.state({visible: true});
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [0, 0]);
+  r.canvas.emit('pointerup');
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [9, 4]);
+});
+
+test('collapsed star is the only control, stops animation and gaze, and supports click, Enter and Escape', async () => {
+  const r = await createRenderer({globalGaze: true});
+  r.action('wave');
+  r.state({dock: {edge: 'left', collapsed: true}});
+  assert.equal(r.canvas.hidden, true);
+  assert.equal(r.button.hidden, true);
+  assert.equal(r.handle.hidden, false);
+  assert.equal(r.indicator.hidden, true);
+  assert.equal(r.bodyClasses.has('collapsed'), true);
+  assert.equal(r.document.body.dataset.dock, 'left');
+  assert.equal(r.clock.pending(), 0);
+  const before = r.draws.length;
+  r.action('jump'); r.gaze({x: 100, y: 0}); r.clock.advance(120000);
+  assert.equal(r.draws.length, before);
+  r.handle.emit('click');
+  let prevented = 0;
+  r.handle.emit('keydown', {key: 'Enter', preventDefault() { prevented++; }});
+  r.document.emit('keydown', {key: 'Escape', preventDefault() { prevented++; }});
+  assert.equal(r.calls.filter(([name]) => name === 'undock').length, 3);
+  assert.equal(prevented, 2);
+  r.state({dock: {edge: 'left', collapsed: false}});
+  assert.equal(r.canvas.hidden, false);
+  assert.equal(r.button.hidden, false);
+  assert.equal(r.handle.hidden, true);
+  assert.equal(r.indicator.hidden, false);
+  assert.match(r.canvas.title, /Esc/);
+  assert.deepEqual(r.cell(), [0, 0]);
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [9, 4]);
+});
+
+test('collapsed startup, expanded reveal and undocking produce one calm schedule', async () => {
+  const r = await createRenderer({dock: {edge: 'bottom', collapsed: true}});
+  assert.equal(r.clock.pending(), 0);
+  r.state({dock: {edge: 'bottom', collapsed: false}});
+  assert.equal(r.clock.nextDelay(), 45000);
+  r.clock.advance(2000);
+  r.state({dock: {edge: 'bottom', collapsed: false}});
+  assert.equal(r.clock.nextDelay(), 43000);
+  r.state({dock: null});
+  assert.equal(r.indicator.hidden, true);
+  assert.equal(r.clock.pending(), 1);
+  assert.equal(r.clock.nextDelay(), 45000);
+  r.document.emit('keydown', {key: 'Escape', preventDefault() { throw new Error('Floating Escape must not be consumed'); }});
+  assert.equal(r.calls.length, 0);
+});
+
+test('window hidden or dock collapse cancels an in-progress drag instead of finishing it', async () => {
+  for (const update of [{visible: false}, {dock: {edge: 'top', collapsed: true}}]) {
+    const r = await createRenderer();
+    r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+    r.state(update);
+    r.canvas.emit('lostpointercapture');
+    assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1);
+    assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0);
+    assert.equal(r.clock.pending(), 0);
+  }
+});
+
+test('rejected async UI commands are handled and expose a recoverable error', async () => {
+  const r = await createRenderer({apiFailure: 'settings'});
+  r.button.emit('click');
+  await Promise.resolve();
+  assert.equal(r.error.hidden, false);
+  assert.match(r.error.textContent, /未能完成/);
+  assert.equal(r.errors.length, 1);
+  assert.equal(r.clock.pending(), 1, 'A command failure must not corrupt playback');
+});
+
+test('local gaze pointerleave cannot cancel a manual action or reduced-motion pose', async () => {
+  for (const reduced of [false, true]) {
+    const r = await createRenderer({gaze: true, reduced});
+    r.action('wave');
+    r.canvas.emit('pointerenter'); r.canvas.emit('pointerleave');
+    assert.deepEqual(r.cell(), [3, 0]);
+    assert.equal(r.clock.pending(), 1);
+  }
+});
+
+test('global gaze avoids redrawing an unchanged pose on repeated native samples', async () => {
+  const r = await createRenderer({globalGaze: true});
+  r.gaze({x: 100, y: 0});
+  const before = r.draws.length;
+  for (let index = 0; index < 30; index++) r.gaze({x: 100 + index, y: 0});
+  assert.equal(r.draws.length, before);
+  assert.equal(r.clock.pending(), 0);
+});
+
+test('hiding or collapsing clears stale local hover so a reveal can resume quiet playback', async () => {
+  for (const hidden of ['document', 'native', 'dock']) {
+    const r = await createRenderer({gaze: true});
+    r.canvas.emit('pointerenter');
+    assert.equal(r.clock.pending(), 0);
+    if (hidden === 'document') { r.visible(false); r.visible(true); }
+    else if (hidden === 'native') { r.state({visible: false}); r.state({visible: true}); }
+    else { r.state({dock: {edge: 'top', collapsed: true}}); r.state({dock: {edge: 'top', collapsed: false}}); }
+    assert.equal(r.clock.nextDelay(), 45000, hidden);
+  }
+});
+
+test('changing gaze preferences preserves a manual action until its normal completion', async () => {
+  const r = await createRenderer();
+  r.action('wave'); r.clock.advance(210);
+  r.update({globalGaze: true, gaze: true});
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [3, 1]);
+  assert.equal(r.clock.nextDelay(), 210);
+  r.clock.advance(840);
+  assert.deepEqual(r.cell(), [0, 0]);
+  assert.equal(r.clock.pending(), 0);
+  r.gaze({x: 100, y: 0});
+  assert.deepEqual(r.cell(), [9, 4]);
 });

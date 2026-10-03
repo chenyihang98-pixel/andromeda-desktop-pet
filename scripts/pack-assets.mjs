@@ -1,5 +1,6 @@
-import {mkdirSync,cpSync,writeFileSync} from 'node:fs';
-const target='dist/Andromeda-0.1.0-asset-pack';
+import {mkdirSync,cpSync,writeFileSync,readFileSync} from 'node:fs';
+const {version}=JSON.parse(readFileSync('package.json','utf8'));
+const target=`dist/Andromeda-${version}-asset-pack`;
 mkdirSync(target,{recursive:true});
 for(const file of ['andromeda.png','manifest.json','neutral.png']) cpSync('assets/'+file,target+'/'+file);
 cpSync('docs/ASSET-FORMAT.md',target+'/ASSET-FORMAT.md');cpSync('NOTICE.md',target+'/NOTICE.md');

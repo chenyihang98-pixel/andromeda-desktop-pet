@@ -1,13 +1,16 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, protocol, dialog } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, protocol, dialog, powerMonitor, shell } = require('electron');
 const fs = require('node:fs/promises');
 const { mkdirSync } = require('node:fs');
 const path = require('node:path');
 const {
   createSettingsStore, validateSettingsPatch, petSize, clampPosition, defaultPosition,
 } = require('./settings.cjs');
+const { dockAt, dockBounds, hitTest, HIDE_DELAY } = require('./docking.cjs');
 
+const RELEASES_URL = 'https://github.com/chenyihang98-pixel/andromeda-desktop-pet/releases';
+const VERSION = require('../package.json').version;
 const APP_NAME = '星璇（Andromeda）桌宠';
 const ROOT = path.resolve(__dirname, '..');
 const PET_URL = 'andromeda://app/src/pet.html';
@@ -48,6 +51,129 @@ let persistenceError = null;
 let dragSession = null;
 let positionSaveTimer = null;
 let desktopSession;
+let dock = null;
+let desktopTimer = null;
+let userHidden = false;
+let contextMenuOpen = false;
+let clickThroughActive = false;
+let settingsBeforePause = false;
+const pauses = new Set();
+
+function paused() { return pauses.size > 0; }
+function normalBounds() {
+  if (!isAlive(petWindow)) return null;
+  if (dock) {
+    const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
+    if (layout) return layout.expanded;
+    return { ...preferences.position, ...petSize(preferences.settings.scale) };
+  }
+  return petWindow.getBounds();
+}
+
+function applyClickThrough() {
+  if (!isAlive(petWindow)) return;
+  const enabled = Boolean(preferences.settings.clickThrough && hasTray() && !dock && !dragSession && !paused());
+  try {
+    petWindow.setIgnoreMouseEvents(enabled);
+    petWindow.setFocusable(!enabled);
+    clickThroughActive = enabled;
+  } catch {
+    // Fail open: never leave an unresponsive pet after an unsupported OS call.
+    try { petWindow.setIgnoreMouseEvents(false); petWindow.setFocusable(true); } catch { /* OS unavailable. */ }
+    clickThroughActive = false;
+    preferences.settings.clickThrough = false;
+  }
+}
+
+function updateDesktopTimer() {
+  const needed = !quitting && !paused() && isAlive(petWindow) && petWindow.isVisible()
+    && Boolean(dock || preferences.settings.globalGaze || clickThroughActive);
+  if (needed && !desktopTimer) desktopTimer = setInterval(pollDesktop, 100);
+  if (!needed && desktopTimer) { clearInterval(desktopTimer); desktopTimer = null; }
+}
+
+function setDockCollapsed(collapsed) {
+  if (!dock || !isAlive(petWindow)) return;
+  const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
+  if (!layout) { undockPet(); return; }
+  dock.collapsed = collapsed;
+  dock.hideAt = null;
+  // Collapse the real input window instead of moving a full-size invisible
+  // rectangle onto an adjacent monitor. Both geometries remain inside workArea.
+  petWindow.setBounds(collapsed ? layout.collapsed : layout.expanded);
+  rememberPosition(true);
+  applyClickThrough();
+  updateTrayMenu(); publishState();
+}
+
+function undockPet() {
+  if (!isAlive(petWindow)) return state();
+  const bounds = normalBounds();
+  dock = null;
+  petWindow.setBounds(bounds);
+  clampPetPosition();
+  applyClickThrough();
+  updateDesktopTimer();
+  updateTrayMenu(); publishState();
+  return state();
+}
+
+function pollDesktop() {
+  if (quitting || paused() || !isAlive(petWindow) || !petWindow.isVisible()) { updateDesktopTimer(); return; }
+  // A destroyed tray must not leave a click-through window stranded.
+  if (clickThroughActive && !hasTray()) {
+    preferences.settings.clickThrough = false;
+    petWindow.setSkipTaskbar(false);
+    applyClickThrough(); savePreferences(); publishState();
+  }
+  let cursor;
+  try { cursor = screen.getCursorScreenPoint(); } catch { return; }
+  if (dock && !dragSession) {
+    const over = hitTest(cursor, petWindow.getBounds());
+    if (dock.collapsed) {
+      if (!over) dock.waitForLeave = false;
+      else if (!dock.waitForLeave) setDockCollapsed(false);
+    } else if (over || contextMenuOpen || (isAlive(settingsWindow) && settingsWindow.isVisible())) {
+      dock.hideAt = null;
+    } else if (dock.hideAt === null) {
+      dock.hideAt = Date.now() + HIDE_DELAY;
+    } else if (Date.now() >= dock.hideAt) {
+      setDockCollapsed(true);
+      dock.waitForLeave = false;
+    }
+  }
+  if (preferences.settings.globalGaze && !dragSession && !dock?.collapsed) {
+    const bounds = petWindow.getBounds();
+    // Send only a bounded direction in sprite coordinates; nothing is stored.
+    petWindow.webContents.send('andromeda:gaze', {
+      x: Math.max(-4096, Math.min(4096, (cursor.x - bounds.x - bounds.width / 2) * 192 / bounds.width)),
+      y: Math.max(-4096, Math.min(4096, (cursor.y - bounds.y - bounds.height / 2) * 208 / bounds.height)),
+    });
+  }
+}
+
+function pauseDesktop(reason) {
+  if (quitting) return;
+  const first = !paused();
+  pauses.add(reason);
+  stopDrag();
+  if (dock) dock.hideAt = null;
+  if (first) settingsBeforePause = Boolean(isAlive(settingsWindow));
+  if (isAlive(settingsWindow)) settingsWindow.hide();
+  if (isAlive(petWindow)) petWindow.hide();
+  applyClickThrough(); updateDesktopTimer(); publishState();
+}
+
+function resumeDesktop(reason) {
+  if (quitting) return;
+  pauses.delete(reason);
+  if (paused()) return;
+  clampPetPosition();
+  if (!userHidden && isAlive(petWindow)) petWindow.showInactive();
+  if (settingsBeforePause && isAlive(settingsWindow)) settingsWindow.showInactive();
+  settingsBeforePause = false;
+  applyClickThrough(); updateDesktopTimer(); publishState();
+}
 
 function isAlive(window) { return window && !window.isDestroyed(); }
 function hasTray() { return tray !== null && !tray.isDestroyed(); }
@@ -58,6 +184,9 @@ function state() {
     visible: Boolean(isAlive(petWindow) && petWindow.isVisible()),
     trayAvailable: hasTray(),
     persistenceError,
+    version: VERSION,
+    dock: dock ? { edge: dock.edge, collapsed: dock.collapsed } : null,
+    clickThroughActive,
   };
 }
 
@@ -82,8 +211,8 @@ function savePreferences() {
 
 function rememberPosition(immediate = false) {
   if (!isAlive(petWindow)) return;
-  const [x, y] = petWindow.getPosition();
-  preferences.position = { x, y };
+  const bounds = normalBounds();
+  preferences.position = { x: bounds.x, y: bounds.y };
   clearTimeout(positionSaveTimer);
   if (immediate) {
     positionSaveTimer = null;
@@ -100,69 +229,110 @@ function rememberPosition(immediate = false) {
 
 function clampPetPosition() {
   if (!isAlive(petWindow)) return;
-  const bounds = petWindow.getBounds();
-  const position = clampPosition(bounds, bounds, screen.getAllDisplays(), screen.getPrimaryDisplay());
-  if (bounds.x !== position.x || bounds.y !== position.y) petWindow.setPosition(position.x, position.y);
+  if (dock) {
+    const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
+    if (layout) { petWindow.setBounds(dock.collapsed ? layout.collapsed : layout.expanded); rememberPosition(true); return; }
+    const position = preferences.position;
+    dock = null;
+    const size = petSize(preferences.settings.scale);
+    petWindow.setBounds({ ...clampPosition(position, size, screen.getAllDisplays(), screen.getPrimaryDisplay()), ...size });
+  } else {
+    const bounds = petWindow.getBounds();
+    const position = clampPosition(bounds, bounds, screen.getAllDisplays(), screen.getPrimaryDisplay());
+    if (bounds.x !== position.x || bounds.y !== position.y) petWindow.setPosition(position.x, position.y);
+  }
   rememberPosition(true);
+  applyClickThrough(); updateDesktopTimer(); publishState();
 }
 
-function stopDrag() {
+function stopDrag(shouldDock = false) {
   if (!dragSession) return;
+  let moved = dragSession.moved;
+  if (shouldDock && isAlive(petWindow) && !paused()) {
+    const cursor = screen.getCursorScreenPoint();
+    const dx = cursor.x - dragSession.cursor.x, dy = cursor.y - dragSession.cursor.y;
+    moved ||= Math.hypot(dx, dy) >= 5;
+    if (moved) {
+      dock = null;
+      petWindow.setPosition(Math.round(dragSession.origin.x + dx), Math.round(dragSession.origin.y + dy));
+    }
+  }
   clearTimeout(dragSession.expiry);
   dragSession = null;
-  if (isAlive(petWindow)) clampPetPosition();
+  if (!isAlive(petWindow)) return;
+  if (shouldDock && moved && preferences.settings.edgeDock && !quitting && !paused()) {
+    const anchor = dockAt(petWindow.getBounds(), screen.getAllDisplays(), screen.getCursorScreenPoint());
+    if (anchor) {
+      dock = { ...anchor, collapsed: false, hideAt: null, waitForLeave: false };
+      setDockCollapsed(true);
+      dock.waitForLeave = hitTest(screen.getCursorScreenPoint(), petWindow.getBounds());
+    }
+  }
+  clampPetPosition();
+  applyClickThrough(); updateDesktopTimer(); publishState();
 }
 
 function restorePet() {
-  if (!isAlive(petWindow)) return;
-  clampPetPosition();
-  if (petWindow.isMinimized()) petWindow.restore();
-  petWindow.show();
-  petWindow.focus();
-  updateTrayMenu();
-  publishState();
+  if (!isAlive(petWindow) || quitting) return;
+  stopDrag();
+  userHidden = false;
+  // Tray, reset and second-instance are unconditional recovery routes.
+  preferences.settings.clickThrough = false;
+  undockPet();
+  if (!paused()) {
+    if (petWindow.isMinimized()) petWindow.restore();
+    petWindow.show(); petWindow.focus();
+  }
+  savePreferences(); updateTrayMenu(); updateDesktopTimer(); publishState();
 }
 
 function hidePet() {
   if (!hasTray()) throw new Error('系统托盘不可用，已保留星璇窗口，避免隐藏后无法找回。');
+  userHidden = true;
   stopDrag();
   if (isAlive(petWindow)) petWindow.hide();
-  updateTrayMenu();
-  publishState();
+  updateTrayMenu(); updateDesktopTimer(); publishState();
   return state();
 }
 
 function quit() {
   quitting = true;
   stopDrag();
+  clearInterval(desktopTimer); desktopTimer = null;
   rememberPosition(true);
   app.quit();
 }
 
 function applySettings(patch) {
   const clean = validateSettingsPatch(patch);
+  if (clean.clickThrough && !hasTray()) throw new Error('系统托盘不可用，无法安全开启点击穿透。');
   stopDrag();
+  const old = normalBounds();
   preferences.settings = { ...preferences.settings, ...clean };
+  if (dock && !preferences.settings.edgeDock) undockPet();
   if (isAlive(petWindow)) {
     const size = petSize(preferences.settings.scale);
-    const old = petWindow.getBounds();
-    // Keep the bottom-center fixed when scaling, then ensure it is on a monitor.
-    const position = clampPosition({
-      x: old.x + (old.width - size.width) / 2,
-      y: old.y + old.height - size.height,
-    }, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
-    petWindow.setBounds({ ...position, ...size });
+    if (dock) {
+      setDockCollapsed(dock.collapsed);
+    } else {
+      // Keep the bottom-center fixed when scaling, then ensure visibility.
+      const position = clampPosition({
+        x: old.x + (old.width - size.width) / 2,
+        y: old.y + old.height - size.height,
+      }, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
+      petWindow.setBounds({ ...position, ...size });
+      preferences.position = position;
+    }
     petWindow.setAlwaysOnTop(preferences.settings.alwaysOnTop);
-    preferences.position = position;
   }
-  savePreferences();
-  updateTrayMenu();
-  publishState();
+  applyClickThrough(); updateDesktopTimer();
+  savePreferences(); updateTrayMenu(); publishState();
   return state();
 }
 
 function resetPosition() {
   stopDrag();
+  undockPet();
   if (isAlive(petWindow)) {
     const position = defaultPosition(petSize(preferences.settings.scale), screen.getPrimaryDisplay());
     petWindow.setPosition(position.x, position.y);
@@ -186,6 +356,7 @@ function menuTemplate() {
     { label: '显示星璇', click: restorePet },
     { label: '暂时隐藏', enabled: hasTray(), click: () => hidePet() },
     { label: '设置…', click: showSettings },
+    { label: '检查新版本（打开发布页）', click: () => { openReleases().catch(() => {}); } },
     { type: 'separator' },
     { label: '打个招呼', click: () => runAction('wave') },
     { label: '开心一下', click: () => runAction('jump') },
@@ -194,6 +365,11 @@ function menuTemplate() {
     { type: 'separator' },
     { label: '窗口置顶', type: 'checkbox', checked: preferences.settings.alwaysOnTop,
       click: (item) => applySettings({ alwaysOnTop: item.checked }) },
+    { label: '边缘收纳', type: 'checkbox', checked: preferences.settings.edgeDock,
+      click: (item) => applySettings({ edgeDock: item.checked }) },
+    { label: '点击穿透（点托盘恢复）', type: 'checkbox', checked: preferences.settings.clickThrough, enabled: hasTray(),
+      click: (item) => applySettings({ clickThrough: item.checked }) },
+    { label: '移出边缘收纳', enabled: Boolean(dock), click: restorePet },
     { label: '重置位置', click: resetPosition },
     { type: 'separator' },
     { label: '退出星璇', click: quit },
@@ -232,6 +408,11 @@ function trustedSender(event, petOnly = false) {
   ));
 }
 
+function openReleases() {
+  // No renderer-supplied URL, fetch, downloaded code or auto-install path.
+  return shell.openExternal(RELEASES_URL).then(() => true);
+}
+
 function registerIPC() {
   function handle(channel, callback, acceptsPatch = false) {
     ipcMain.handle(channel, (event, ...args) => {
@@ -241,6 +422,8 @@ function registerIPC() {
     });
   }
   handle('andromeda:get-state', state);
+  handle('andromeda:undock', () => { restorePet(); return state(); });
+  handle('andromeda:open-releases', openReleases);
   handle('andromeda:set-settings', applySettings, true);
   handle('andromeda:show-settings', () => { showSettings(); return state(); });
   handle('andromeda:hide', hidePet);
@@ -259,27 +442,29 @@ function registerIPC() {
     });
   }
   dragHandler('andromeda:start-drag', () => {
-    if (!petWindow.isVisible()) return;
+    if (!petWindow.isVisible() || paused() || dock?.collapsed || clickThroughActive) return;
     stopDrag();
     const cursor = screen.getCursorScreenPoint();
     const bounds = petWindow.getBounds();
-    if (cursor.x < bounds.x || cursor.y < bounds.y || cursor.x >= bounds.x + bounds.width || cursor.y >= bounds.y + bounds.height) return;
-    dragSession = { cursor, origin: { x: bounds.x, y: bounds.y }, lastUpdate: 0, expiry: setTimeout(stopDrag, 30_000) };
+    if (!hitTest(cursor, bounds)) return;
+    if (dock) dock.hideAt = null;
+    dragSession = { cursor, origin: { x: bounds.x, y: bounds.y }, moved: false, lastUpdate: 0, expiry: setTimeout(stopDrag, 30_000) };
   });
   dragHandler('andromeda:drag', () => {
-    if (!dragSession || !petWindow.isVisible()) return;
+    if (!dragSession || !petWindow.isVisible() || paused()) return;
     clearTimeout(dragSession.expiry);
     dragSession.expiry = setTimeout(stopDrag, 30_000);
     if (Date.now() - dragSession.lastUpdate < 15) return;
     dragSession.lastUpdate = Date.now();
-    // No screen coordinates received from the renderer are trusted or accepted.
     const cursor = screen.getCursorScreenPoint();
-    petWindow.setPosition(
-      Math.round(dragSession.origin.x + cursor.x - dragSession.cursor.x),
-      Math.round(dragSession.origin.y + cursor.y - dragSession.cursor.y),
-    );
+    const dx = cursor.x - dragSession.cursor.x, dy = cursor.y - dragSession.cursor.y;
+    if (!dragSession.moved && Math.hypot(dx, dy) < 5) return;
+    dragSession.moved = true;
+    if (dock) { dock = null; publishState(); }
+    petWindow.setPosition(Math.round(dragSession.origin.x + dx), Math.round(dragSession.origin.y + dy));
   });
-  dragHandler('andromeda:end-drag', stopDrag);
+  dragHandler('andromeda:end-drag', () => stopDrag(true));
+  dragHandler('andromeda:cancel-drag', () => stopDrag(false));
 }
 
 function isLocalURL(value) {
@@ -389,16 +574,20 @@ function createPetWindow() {
     webPreferences: webPreferences(),
   });
   secureWindow(petWindow);
-  petWindow.webContents.on('context-menu', () => Menu.buildFromTemplate(menuTemplate()).popup({ window: petWindow }));
+  petWindow.webContents.on('context-menu', () => {
+    contextMenuOpen = true;
+    if (dock) dock.hideAt = null;
+    Menu.buildFromTemplate(menuTemplate()).popup({ window: petWindow, callback: () => { contextMenuOpen = false; if (dock) dock.hideAt = null; } });
+  });
   petWindow.once('ready-to-show', () => {
     if (quitting || !isAlive(petWindow)) return;
-    petWindow.show(); // Hidden state is deliberately never persisted.
-    publishState();
+    if (!paused() && !userHidden) petWindow.show(); // Hidden/docked/clickthrough state does not strand a restart.
+    applyClickThrough(); updateDesktopTimer(); publishState();
   });
   petWindow.on('move', () => rememberPosition());
-  petWindow.on('blur', stopDrag);
-  petWindow.on('hide', () => { stopDrag(); publishState(); });
-  petWindow.on('show', publishState);
+  petWindow.on('blur', () => stopDrag(false));
+  petWindow.on('hide', () => { stopDrag(); updateDesktopTimer(); publishState(); });
+  petWindow.on('show', () => { updateDesktopTimer(); publishState(); });
   petWindow.on('close', (event) => {
     if (!quitting && hasTray()) {
       event.preventDefault();
@@ -420,7 +609,9 @@ function createPetWindow() {
 }
 
 function showSettings() {
+  if (quitting || paused()) return;
   stopDrag();
+  if (dock) { dock.hideAt = null; if (dock.collapsed) setDockCollapsed(false); }
   if (isAlive(settingsWindow)) {
     if (settingsWindow.isMinimized()) settingsWindow.restore();
     settingsWindow.show();
@@ -429,7 +620,7 @@ function showSettings() {
   }
   const area = screen.getPrimaryDisplay().workArea;
   settingsWindow = new BrowserWindow({
-    width: Math.min(480, area.width), height: Math.min(740, area.height),
+    width: Math.min(480, area.width), height: Math.min(870, area.height),
     title: `${APP_NAME} · 设置`, icon: ICON_PATH,
     backgroundColor: '#10172b',
     resizable: false, maximizable: false, fullscreenable: false,
@@ -437,8 +628,8 @@ function showSettings() {
     webPreferences: webPreferences(),
   });
   secureWindow(settingsWindow);
-  settingsWindow.once('ready-to-show', () => { if (isAlive(settingsWindow)) settingsWindow.show(); });
-  settingsWindow.on('closed', () => { settingsWindow = null; });
+  settingsWindow.once('ready-to-show', () => { if (!quitting && !paused() && isAlive(settingsWindow)) settingsWindow.show(); });
+  settingsWindow.on('closed', () => { settingsWindow = null; if (dock) dock.hideAt = null; });
   loadWindow(settingsWindow, SETTINGS_URL);
 }
 
@@ -451,6 +642,7 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
     stopDrag();
     clearTimeout(positionSaveTimer);
+    clearInterval(desktopTimer); desktopTimer = null;
     rememberPosition(true);
   });
   app.on('will-quit', () => { if (hasTray()) tray.destroy(); });
@@ -460,6 +652,12 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === 'win32') app.setAppUserModelId('com.andromeda.desktop-pet');
     store = createSettingsStore(app.getPath('userData'));
     preferences = store.load();
+    // Intentionally never start in click-through mode, even if enabled last run.
+    preferences.settings.clickThrough = false;
+    powerMonitor.on('lock-screen', () => pauseDesktop('locked'));
+    powerMonitor.on('unlock-screen', () => resumeDesktop('locked'));
+    powerMonitor.on('suspend', () => pauseDesktop('suspended'));
+    powerMonitor.on('resume', () => resumeDesktop('suspended'));
     secureSession(session.defaultSession);
     desktopSession = session.fromPartition('andromeda-desktop', { cache: false });
     secureSession(desktopSession);
@@ -469,7 +667,7 @@ if (!app.requestSingleInstanceLock()) {
     createPetWindow();
     createTray();
     for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
-      screen.on(eventName, () => { stopDrag(); clampPetPosition(); });
+      screen.on(eventName, () => { stopDrag(); if (dock) dock.hideAt = null; clampPetPosition(); });
     }
   }).catch((error) => {
     console.error('Unable to start Andromeda:', error);
