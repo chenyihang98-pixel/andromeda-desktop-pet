@@ -64,9 +64,7 @@ npm run test:ui
 
 Linux 可用 `CHROMIUM_PATH=/usr/bin/chromium npm run test:ui`。首次启动 Electron 会下载锁定的运行时，也可提前运行 `node node_modules/electron/install.js`。
 
-## 版本与验证范围
-
-当前下载包面向 Windows x64，更新通过「检查新版本」手动查看发布页。全屏检测已通过单屏受控窗口检查；游戏、真实鼠标交互、混合 DPI、多屏、锁屏/休眠和 RDP 等完整实机验收仍待完成。具体证据见[测试记录](docs/TESTING.md)，透明像素穿透、自动更新、其他平台和体积优化的后续安排见[续做说明](docs/CODEX-HANDOFF.md)。
+[版本与验证范围](docs/VERSION-AND-VALIDATION.md)
 
 ## 素材与继续开发
 
