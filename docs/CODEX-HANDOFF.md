@@ -1,14 +1,14 @@
-# Andromeda v0.2.0: continuation brief for Codex
+# Andromeda: continuation brief for Codex
 
 ## Scope and starting point
 
 Repository: https://github.com/chenyihang98-pixel/andromeda-desktop-pet
 
-Start from tag `v0.2.0` (the release is expected to point to the final source commit for this document). Before editing, resolve the tag and `main`, record their exact SHAs, and inspect intervening changes. This brief belongs to the versioned source, so it does not embed a self-referential commit SHA. See the release's `SHA256SUMS.txt` for exact artifact identities. Keep earlier tags and assets intact.
+Continue from the latest `main`, which already includes the unpublished Windows fixes in commit `537f706882903d05623df8adf065132405d8b97b`. The downloadable `v0.2.0` release remains at `ff316368f6c100c8489940dec0cf3275816a7b2a` and does not include those fixes. The package version is still `0.2.0`; a local build of `main` is not the original release artifact. Before editing, resolve `main` and the tag again, record their exact SHAs, and inspect intervening changes. See the release's `SHA256SUMS.txt` for original artifact identities. Keep earlier tags and assets intact. The release's attached English handoff is a historical snapshot; this source document is the current continuation guide.
 
 The owner requested practical evolution of known limitations, especially: drag the pet to an edge, tuck it away behind a small hover handle, reveal on hover, retract after leaving, and drag back out. Keep the calm stationary default and original art. Work only in this repository. Public visibility is not an open-source license: retain `UNLICENSED` and `NOTICE.md` unless the owner separately authorizes a change.
 
-## Implemented in this release
+## Implemented in the original v0.2.0 release
 
 - Four work-area edges, 18 DIP release threshold, actual compact handle geometry, hover reveal, 700 ms departure delay, re-entry cancellation, drag undocking, keyboard/tray/reset recovery
 - No automatic docking during a cross-monitor drag or on pointer cancellation, blur, lost capture, or timeout
@@ -22,15 +22,25 @@ The owner requested practical evolution of known limitations, especially: drag t
 
 Read `README.md`, `docs/ARCHITECTURE.md`, and `docs/TESTING.md` before changing behavior. The original atlas SHA-256 remains `8007f0c1c212ec2c950a92af4c8648d6eab66b61e7d998b702e452b3e7b1040d`.
 
+## Windows fixes in main (not in published downloads)
+
+- Read the OS's actual compact-window size and fit it back into the target work area; fix right/bottom overflow caused by Windows minimum sizes and fill the handle to the actual window
+- Cancel dragging immediately when the native menu opens and reject new drags until it closes
+- Bind dragging to the initiating `pointerId` and release capture during cleanup
+- Restore the configured full pet size after undocking from a constrained work area
+- Make renderer checks compatible with LF/CRLF and discover installed Chrome/Edge/Chromium for sandboxed browser tests
+
+These are source changes, not a new binary release. Read `docs/WINDOWS-QA-2026-10-03.md` and the saved geometry evidence before repeating the diagnosis.
+
 ## Verification boundary
 
-The owner confirmed v0.1.0 on their Windows computer. That does **not** verify v0.2.0. The original release build/test machine was Linux. A subsequent Windows 11 continuation is recorded in `docs/WINDOWS-QA-2026-10-03.md`, including exact baseline refs, local changes, automated checks, and limited native observations. Unit and Electron/renderer adapter tests are useful regression evidence, not native Windows mouse routing, compositor, tray, lock, RDP, or mixed-DPI proof. Exact automated results and browser-test limitations are recorded in `docs/TESTING.md`. Do not turn a mock pass, cross-build, or screenshot into a native Windows QA claim. Priority 1 remains incomplete until the outstanding native matrix is exercised.
+The owner confirmed v0.1.0 on their Windows computer. That does **not** verify v0.2.0. The original release build/test machine was Linux. A subsequent Windows 11 continuation is recorded in `docs/WINDOWS-QA-2026-10-03.md`, including exact baseline refs, changes now committed to `main`, automated checks, and limited native observations. It recorded 125 automated tests, 58 browser assertions with the sandbox enabled, and 12 native geometry checks on one display at 200% scale; the dependency audit found 0 known vulnerabilities on 2026-10-03. Those results apply to the post-release source, not to the downloadable ZIP. Unit and Electron/renderer adapter tests are useful regression evidence, not native Windows mouse routing, compositor, tray, lock, RDP, or mixed-DPI proof. Exact automated results and browser-test limitations are recorded in `docs/TESTING.md`. Do not turn a mock pass, cross-build, or screenshot into a native Windows QA claim. Priority 1 remains incomplete until the outstanding native matrix is exercised.
 
 ## Priority 1: native Windows validation and fixes
 
 Files: `src/main.cjs`, `src/docking.cjs`, `src/pet.mjs`, `src/pet.css`, `tests/main.test.cjs`, `tests/docking.test.cjs`, `tests/renderer.test.mjs`.
 
-Run the packaged ZIP on Windows 10/11 x64. Exercise the entire checklist in `docs/TESTING.md`, especially four edges/corners, taskbars on different sides, 100/125/150/200% scale, mixed-DPI displays with negative coordinates, monitor unplugging while tucked away, RDP reconnect, overlapping lock/sleep events, and shutdown while timers are pending. Verify the OS permits the compact handle bounds and that cursor capture remains valid while resizing/moving. Record OS/build, topology, DPI, observed result, and exact commit.
+The original release ZIP is useful as a regression baseline but predates the fixes above. To validate current source, use an authorized fresh build of the latest `main`, record the source SHA and artifact hash, and do not replace the existing release or reuse its checksum. Run that build on Windows 10/11 x64. Exercise the entire checklist in `docs/TESTING.md`, especially four edges/corners, taskbars on different sides, 100/125/150/200% scale, mixed-DPI displays with negative coordinates, monitor unplugging while tucked away, RDP reconnect, overlapping lock/sleep events, and shutdown while timers are pending. Verify the OS permits the compact handle bounds and that cursor capture remains valid while resizing/moving. Record OS/build, topology, DPI, observed result, and exact commit.
 
 Acceptance: no stranded/invisible pet; no unexpected global click interception; no focus stealing on hover/unlock; no ghost input rectangle on an adjacent monitor; every entry state has a reliable tray/reset recovery route. Add focused regression tests for defects before marking the matrix verified. Never disable OS security to run the program.
 
