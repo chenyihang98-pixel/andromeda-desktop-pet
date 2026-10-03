@@ -6,19 +6,25 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { DEFAULT_SETTINGS, petSize } = require('../src/settings.cjs');
-const primary = { id: 1, scaleFactor: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+const primary = {
+  id: 1, scaleFactor: 1,
+  bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+  workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+};
 
 // These tests exercise the actual main entry point against a small Electron
 // adapter. They validate lifecycle/IPC policy without claiming native OS QA.
 async function createShell(t, {
   trayWorks = true, lockAvailable = true, displays = [primary],
   saved = null, deferReady = false, ignoreMouseFails = false, nativeMinimumSize = null,
+  platform = 'win32', fullscreenHelperExists = true, packaged = false,
+  screenToDipPoint = (point) => ({ ...point }),
 } = {}) {
   const { EventEmitter } = require('node:events');
   const Module = require('node:module');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'andromeda-shell-'));
   const windows = [];
-  const menus = [], trays = [], popups = [], externalURLs = [];
+  const menus = [], trays = [], popups = [], externalURLs = [], fullscreenMonitors = [];
   let now = 1_000_000, serial = 0;
   const timers = new Map();
   const schedule = (fn, delay, interval = false) => {
@@ -49,7 +55,7 @@ async function createShell(t, {
   const handlers = new Map();
   const app = new EventEmitter();
   Object.assign(app, {
-    isPackaged: false, quitCount: 0, commandLine: { appendSwitch() {} },
+    isPackaged: packaged, quitCount: 0, commandLine: { appendSwitch() {} },
     paths: {}, setName() {}, enableSandbox() {}, setAppUserModelId() {},
     setPath(name, value) { assert.equal(fs.statSync(value).isDirectory(), true); this.paths[name] = value; },
     requestSingleInstanceLock: () => lockAvailable,
@@ -133,9 +139,18 @@ async function createShell(t, {
   const image = { isEmpty: () => false, resize() { return this; } };
   const screen = new EventEmitter();
   Object.assign(screen, {
-    cursor: { x: 1700, y: 800 }, displays, primary: displays[0], cursorReads: 0,
+    cursor: { x: 1700, y: 800 }, displays, primary: displays[0], cursorReads: 0, physicalPoints: [],
     getAllDisplays() { return this.displays; }, getPrimaryDisplay() { return this.primary; },
     getCursorScreenPoint() { this.cursorReads += 1; return { ...this.cursor }; },
+    screenToDipPoint(point) { this.physicalPoints.push({ ...point }); return screenToDipPoint(point); },
+    getDisplayMatching(bounds) {
+      const overlap = (display) => {
+        const area = display.bounds || display.workArea;
+        return Math.max(0, Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x))
+          * Math.max(0, Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y));
+      };
+      return [...this.displays].sort((a, b) => overlap(b) - overlap(a))[0];
+    },
   });
   const powerMonitor = new EventEmitter();
   const ipcMain = new EventEmitter();
@@ -153,13 +168,36 @@ async function createShell(t, {
   // Scope the fake clock to the actual entry point, without replacing Node's
   // global timers or changing its implementation for the adapter.
   const localRequire = Module.createRequire(entry);
-  const entryRequire = (name) => name === 'electron' ? fakeElectron : localRequire(name);
+  const resourcesPath = path.join(folder, 'resources');
+  const helperPath = packaged
+    ? path.join(resourcesPath, 'native', 'windows-fullscreen.exe')
+    : path.resolve(path.dirname(entry), '..', 'dist', 'native', 'windows-fullscreen.exe');
+  const entryRequire = (name) => {
+    if (name === 'electron') return fakeElectron;
+    if (name === 'node:fs') return {
+      ...fs, existsSync: (file) => file === helperPath ? fullscreenHelperExists : fs.existsSync(file),
+    };
+    if (name === './fullscreen-monitor.cjs') return {
+      createFullscreenMonitor(options) {
+        const monitor = {
+          helperPath: options.helperPath, starts: 0, stops: 0,
+          start() { this.starts += 1; }, stop() { this.stops += 1; },
+          // Deliberately deliver even after stop to exercise late-child guards.
+          snapshot: (value) => options.onChange(value), error: () => options.onError(),
+        };
+        fullscreenMonitors.push(monitor);
+        return monitor;
+      },
+    };
+    return localRequire(name);
+  };
   new Function('require', 'module', 'exports', '__filename', '__dirname',
-    'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date',
+    'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'process',
     fs.readFileSync(entry, 'utf8'))(
     entryRequire, {exports: {}}, {}, entry, path.dirname(entry),
     (fn, delay) => schedule(fn, delay), (id) => timers.delete(id),
     (fn, delay) => schedule(fn, delay, true), (id) => timers.delete(id), FakeDate,
+    { platform, resourcesPath },
   );
   await new Promise((resolve) => setImmediate(resolve));
   t.after(() => {
@@ -172,6 +210,7 @@ async function createShell(t, {
   return {
     app, windows, menus, trays, popups, handlers, eventFor, invoke, ipcMain,
     screen, powerMonitor, desktopSession, clock, externalURLs, folder: app.getPath('userData'),
+    fullscreenMonitors, fullscreenHelperPath: helperPath,
     send: (channel, ...args) => ipcMain.emit(`andromeda:${channel}`, eventFor(windows[0]), ...args),
     state: () => invoke(windows[0], 'get-state'),
     saved: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')),
@@ -811,4 +850,262 @@ test('release over the collapsed handle waits for a pointer exit before hover ca
   assert.equal(shell.state().dock.collapsed, true, 'Releasing over the new handle must not immediately pop it open');
   revealHandle(shell);
   assert.equal(shell.state().dock.collapsed, false);
+});
+
+test('fullscreen auto-hide is opt-in and requires both Windows helper and tray capability', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  assert.equal(shell.state().fullscreenAvailable, true);
+  assert.equal(shell.state().settings.autoHideFullscreen, false);
+  assert.equal(shell.state().fullscreenSuppressed, false);
+  assert.equal(shell.fullscreenMonitors.length, 0);
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  assert.equal(shell.fullscreenMonitors.length, 1);
+  assert.equal(shell.fullscreenMonitors[0].starts, 1);
+  assert.equal(shell.fullscreenMonitors[0].helperPath, shell.fullscreenHelperPath);
+  assert.equal(shell.saved().settings.autoHideFullscreen, true);
+
+  for (const options of [
+    { platform: 'linux' }, { platform: 'darwin' }, { fullscreenHelperExists: false }, { trayWorks: false },
+  ]) {
+    const unavailable = await createShell(t, { ...options, saved: {
+      version: 1, settings: { ...DEFAULT_SETTINGS, autoHideFullscreen: true }, position: null,
+    } });
+    assert.equal(unavailable.state().settings.autoHideFullscreen, false);
+    assert.equal(unavailable.state().fullscreenAvailable, options.trayWorks === false);
+    assert.equal(unavailable.fullscreenMonitors.length, 0);
+    assert.throws(() => unavailable.invoke(unavailable.windows[0], 'set-settings', { autoHideFullscreen: true }), /Windows.*托盘/);
+    assert.equal(unavailable.windows[0].visible, true);
+  }
+});
+
+test('saved fullscreen opt-in uses the packaged helper path without restoring hidden state', async (t) => {
+  const shell = await createShell(t, { packaged: true, saved: {
+    version: 1, settings: { ...DEFAULT_SETTINGS, autoHideFullscreen: true }, position: null,
+  } });
+  assert.equal(shell.fullscreenMonitors.length, 1);
+  assert.equal(shell.fullscreenMonitors[0].helperPath, shell.fullscreenHelperPath);
+  assert.equal(shell.windows[0].visible, true, 'Only a current detector observation can suppress the window');
+  assert.equal(shell.state().fullscreenSuppressed, false);
+});
+
+test('fullscreen matching uses converted physical monitor centers and only suppresses the pet display', async (t) => {
+  const left = {
+    id: 2, scaleFactor: 1.5,
+    bounds: { x: -1600, y: -200, width: 1600, height: 1000 },
+    workArea: { x: -1600, y: -200, width: 1600, height: 960 },
+  };
+  const physicalLeft = { x: -2560, y: -1200, width: 2560, height: 1600 };
+  const physicalPrimary = { x: 0, y: 0, width: 3840, height: 2160 };
+  const shell = await createShell(t, {
+    displays: [primary, left],
+    screenToDipPoint(point) {
+      if (point.x < 0) {
+        assert.deepEqual(point, { x: -1280, y: -400 });
+        // Origins are deliberately not related by simple scale multiplication.
+        return { x: -800, y: 300 };
+      }
+      assert.deepEqual(point, { x: 1920, y: 1080 });
+      return { x: 960, y: 540 };
+    },
+  });
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  const monitor = shell.fullscreenMonitors[0];
+  monitor.snapshot(physicalLeft);
+  assert.equal(pet.visible, true, 'Fullscreen on another display does not hide the pet');
+  movePet(shell, -1000, 200);
+  monitor.snapshot(physicalPrimary);
+  assert.equal(pet.visible, true);
+  monitor.snapshot(physicalLeft);
+  assert.equal(pet.visible, false);
+  assert.equal(shell.state().fullscreenSuppressed, true);
+  assert.equal(shell.screen.physicalPoints.length, 3);
+  monitor.snapshot(null);
+  assert.equal(pet.visible, true);
+  assert.equal(shell.state().fullscreenSuppressed, false);
+});
+
+test('fullscreen pause restores pet and settings without focus and preserves a manual hide', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'show-settings');
+  await new Promise((resolve) => setImmediate(resolve));
+  const settings = shell.windows[1];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true, globalGaze: true });
+  const monitor = shell.fullscreenMonitors[0];
+  const focusCount = (window) => window.calls.filter(([name]) => name === 'focus').length;
+  const petFocus = focusCount(pet), settingsFocus = focusCount(settings);
+  assert.equal(shell.clock.intervals(), 1);
+  monitor.snapshot(primary.bounds);
+  assert.equal(pet.visible, false);
+  assert.equal(settings.visible, false);
+  assert.equal(shell.clock.intervals(), 0, 'Animation/cursor polling stops independently of the detector');
+  assert.equal(monitor.stops, 0, 'The fullscreen heartbeat must survive its own suppression');
+  monitor.snapshot(null);
+  assert.equal(pet.visible, true);
+  assert.equal(settings.visible, true);
+  assert.ok(pet.calls.some(([name]) => name === 'showInactive'));
+  assert.ok(settings.calls.some(([name]) => name === 'showInactive'));
+  assert.equal(focusCount(pet), petFocus);
+  assert.equal(focusCount(settings), settingsFocus);
+  assert.equal(shell.clock.intervals(), 1);
+
+  shell.invoke(pet, 'hide');
+  monitor.snapshot(primary.bounds); monitor.snapshot(null);
+  assert.equal(pet.visible, false, 'Automatic recovery does not override a deliberate hide');
+  assert.equal(settings.visible, true);
+  assert.equal(shell.state().settings.autoHideFullscreen, true);
+});
+
+test('fullscreen detector stops through nested lock/suspend and restarts only after both clear', async (t) => {
+  for (const [first, second, clearFirst, clearSecond] of [
+    ['lock-screen', 'suspend', 'unlock-screen', 'resume'],
+    ['suspend', 'lock-screen', 'resume', 'unlock-screen'],
+  ]) {
+    const shell = await createShell(t);
+    const pet = shell.windows[0];
+    shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+    const initial = shell.fullscreenMonitors[0];
+    initial.snapshot(primary.bounds);
+    shell.powerMonitor.emit(first); shell.powerMonitor.emit(second);
+    assert.equal(initial.stops, 1);
+    assert.equal(pet.visible, false);
+    assert.equal(shell.state().fullscreenSuppressed, false, 'Old fullscreen observations do not survive a desktop pause');
+    initial.snapshot(null); initial.error();
+    assert.equal(shell.state().settings.autoHideFullscreen, true, 'Late callbacks from a stopped detector are ignored');
+    shell.powerMonitor.emit(clearFirst);
+    assert.equal(shell.fullscreenMonitors.length, 1);
+    assert.equal(pet.visible, false);
+    shell.powerMonitor.emit(clearSecond);
+    assert.equal(shell.fullscreenMonitors.length, 2);
+    assert.equal(shell.fullscreenMonitors[1].starts, 1);
+    assert.equal(pet.visible, true);
+    assert.equal(pet.calls.filter(([name]) => name === 'focus').length, 0);
+    initial.snapshot(primary.bounds);
+    assert.equal(pet.visible, true, 'A previous child cannot suppress the resumed desktop');
+    shell.fullscreenMonitors[1].snapshot(primary.bounds);
+    assert.equal(pet.visible, false);
+  }
+});
+
+test('explicit tray, reset and second-instance recovery disable fullscreen opt-in', async (t) => {
+  for (const recover of [
+    (shell) => shell.trays[0].emit('click'),
+    (shell) => shell.invoke(shell.windows[0], 'reset-position'),
+    (shell) => shell.app.emit('second-instance'),
+  ]) {
+    const shell = await createShell(t);
+    const pet = shell.windows[0];
+    shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+    const monitor = shell.fullscreenMonitors[0];
+    monitor.snapshot(primary.bounds);
+    assert.equal(pet.visible, false);
+    recover(shell);
+    assert.equal(pet.visible, true);
+    assert.equal(shell.state().settings.autoHideFullscreen, false);
+    assert.equal(shell.saved().settings.autoHideFullscreen, false);
+    assert.equal(shell.state().fullscreenSuppressed, false);
+    assert.equal(monitor.stops, 1);
+    monitor.snapshot(primary.bounds); monitor.error();
+    assert.equal(pet.visible, true);
+    assert.equal(shell.state().fullscreenError, null);
+  }
+});
+
+test('opening settings during fullscreen suppression is an explicit recovery route', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  const monitor = shell.fullscreenMonitors[0];
+  monitor.snapshot(primary.bounds);
+  shell.invoke(pet, 'show-settings');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(shell.windows[1].visible, true);
+  assert.equal(pet.visible, true);
+  assert.equal(shell.state().settings.autoHideFullscreen, false);
+  assert.equal(monitor.stops, 1);
+});
+
+test('fullscreen detector failure disables opt-in, fails open and permits an explicit retry', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  const monitor = shell.fullscreenMonitors[0];
+  monitor.snapshot(primary.bounds); monitor.error();
+  assert.equal(pet.visible, true);
+  assert.equal(shell.state().settings.autoHideFullscreen, false);
+  assert.equal(shell.saved().settings.autoHideFullscreen, false);
+  assert.equal(shell.state().fullscreenSuppressed, false);
+  assert.match(shell.state().fullscreenError, /已关闭自动隐藏/);
+  assert.equal(monitor.stops, 1);
+  assert.equal(pet.calls.filter(([name]) => name === 'focus').length, 0);
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  assert.equal(shell.state().fullscreenError, null);
+  assert.equal(shell.fullscreenMonitors.length, 2);
+  monitor.error(); monitor.snapshot(primary.bounds);
+  assert.equal(shell.state().settings.autoHideFullscreen, true);
+  assert.equal(pet.visible, true);
+  shell.fullscreenMonitors[1].snapshot(primary.bounds);
+  assert.equal(pet.visible, false);
+});
+
+test('lost tray recovers a fullscreen-hidden pet and taskbar access at the next heartbeat', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  const monitor = shell.fullscreenMonitors[0];
+  monitor.snapshot(primary.bounds);
+  shell.trays[0].destroy(); monitor.snapshot(primary.bounds);
+  assert.equal(pet.visible, true);
+  assert.equal(pet.skipTaskbar, false);
+  assert.equal(shell.state().trayAvailable, false);
+  assert.equal(shell.state().settings.autoHideFullscreen, false);
+  assert.equal(shell.saved().settings.autoHideFullscreen, false);
+  assert.equal(shell.state().fullscreenSuppressed, false);
+  assert.equal(monitor.stops, 1);
+});
+
+test('display topology changes discard fullscreen observations until a new heartbeat', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true });
+  const monitor = shell.fullscreenMonitors[0];
+  for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) {
+    monitor.snapshot(primary.bounds);
+    assert.equal(pet.visible, false);
+    shell.screen.emit(event, {}, primary, ['bounds']);
+    assert.equal(pet.visible, true);
+    assert.equal(shell.state().fullscreenSuppressed, false);
+    shell.invoke(pet, 'set-settings', { scale: 1 });
+    assert.equal(pet.visible, true, 'Another settings update cannot reuse the discarded monitor geometry');
+    monitor.snapshot(primary.bounds);
+    assert.equal(pet.visible, false);
+    assert.equal(monitor.stops, 0);
+  }
+  shell.screen.screenToDipPoint = () => { throw new Error('display disappeared'); };
+  monitor.snapshot(primary.bounds);
+  assert.equal(pet.visible, true, 'Unavailable native geometry must fail open');
+  assert.equal(shell.state().fullscreenSuppressed, false);
+});
+
+test('quit stops fullscreen helper once and ignores all of its delayed callbacks', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', { autoHideFullscreen: true, globalGaze: true });
+  const monitor = shell.fullscreenMonitors[0];
+  monitor.snapshot(primary.bounds);
+  const showCount = pet.calls.filter(([name]) => name === 'show').length;
+  shell.invoke(pet, 'quit');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(monitor.stops, 1);
+  monitor.snapshot(null); monitor.snapshot(primary.bounds); monitor.error();
+  shell.powerMonitor.emit('resume'); shell.powerMonitor.emit('unlock-screen');
+  shell.app.emit('second-instance'); shell.trays[0].emit('click');
+  shell.clock.advance(60_000);
+  assert.equal(shell.fullscreenMonitors.length, 1);
+  assert.equal(pet.visible, false);
+  assert.equal(pet.calls.filter(([name]) => name === 'show').length, showCount);
+  assert.equal(shell.clock.pending(), 0);
+  assert.equal(shell.state().fullscreenError, null);
 });

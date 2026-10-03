@@ -1,6 +1,6 @@
 const api = window.andromeda;
 const status = document.querySelector('#status');
-const toggleKeys = ['alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough'];
+const toggleKeys = ['alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen'];
 let state, latestPatch = 0;
 function showError(message = '这次操作未能完成，请再试一次') {
   status.textContent = message; status.classList.add('error');
@@ -15,11 +15,17 @@ function render(next) {
   document.querySelector('#version').textContent = 'ANDROMEDA · ' + (next.version || '0.2.0');
   document.querySelector('#hide').disabled = !next.trayAvailable;
   document.querySelector('#clickThrough').disabled = !next.trayAvailable;
+  document.querySelector('#autoHideFullscreen').disabled = !next.fullscreenAvailable || !next.trayAvailable;
+  document.querySelector('#fullscreen-help').textContent = !next.fullscreenAvailable
+    ? '此版本未提供可用的 Windows 全屏检测组件，自动隐藏已禁用'
+    : !next.trayAvailable ? '系统托盘不可用，自动隐藏已禁用，避免无法找回角色窗口'
+    : next.fullscreenError || '默认关闭，仅检测同屏前台应用。结束全屏后恢复；点托盘显示星璇会关闭此选项。部分游戏可能无法识别';
   document.querySelector('#click-through-help').textContent = !next.trayAvailable
     ? '系统托盘不可用，鼠标穿透已禁用，避免无法找回角色窗口'
     : '穿透整个角色窗口。点击系统托盘图标可关闭穿透并解除停靠；停靠时自动暂停穿透';
   const desktop = document.querySelector('#desktop-state');
-  desktop.textContent = next.clickThroughActive ? '鼠标穿透中 · 点击系统托盘图标恢复互动'
+  desktop.textContent = next.fullscreenSuppressed ? '同屏应用全屏中 · 暂时隐藏；点托盘可恢复并关闭自动隐藏'
+    : next.clickThroughActive ? '鼠标穿透中 · 点击系统托盘图标恢复互动'
     : next.settings.clickThrough && next.dock ? '已停靠 · 鼠标穿透暂时停用'
     : next.dock?.collapsed ? '已收起为星标 · 悬停展开'
     : next.dock ? '已停靠 · 向内拖动或按 Esc 解除' : '';
@@ -50,6 +56,7 @@ document.querySelector('#scale').addEventListener('input', event => { document.q
 document.querySelector('#scale').addEventListener('change', event => { void patch({scale: Number(event.target.value)}); });
 for (const key of toggleKeys) document.querySelector('#' + key).addEventListener('change', event => {
   if (key === 'clickThrough' && !state?.trayAvailable) { if (state) render(state); return; }
+  if (key === 'autoHideFullscreen' && (!state?.fullscreenAvailable || !state?.trayAvailable)) { if (state) render(state); return; }
   void patch({[key]: event.target.checked});
 });
 document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => { void invoke('playAction', button.dataset.action); }));

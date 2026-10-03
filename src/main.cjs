@@ -2,13 +2,14 @@
 
 const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, protocol, dialog, powerMonitor, shell } = require('electron');
 const fs = require('node:fs/promises');
-const { mkdirSync } = require('node:fs');
+const { mkdirSync, existsSync } = require('node:fs');
 const path = require('node:path');
 const {
   createSettingsStore, validateSettingsPatch, petSize, clampPosition, defaultPosition,
 } = require('./settings.cjs');
 const { dockAt, dockBounds, hitTest, HIDE_DELAY } = require('./docking.cjs');
 const { applyDockWindowBounds } = require('./dock-window.cjs');
+const { createFullscreenMonitor } = require('./fullscreen-monitor.cjs');
 
 const RELEASES_URL = 'https://github.com/chenyihang98-pixel/andromeda-desktop-pet/releases';
 const VERSION = require('../package.json').version;
@@ -17,6 +18,10 @@ const ROOT = path.resolve(__dirname, '..');
 const PET_URL = 'andromeda://app/src/pet.html';
 const SETTINGS_URL = 'andromeda://app/src/settings.html';
 const ICON_PATH = path.join(ROOT, 'assets', 'icon.png');
+const FULLSCREEN_HELPER = app.isPackaged
+  ? path.join(process.resourcesPath, 'native', 'windows-fullscreen.exe')
+  : path.join(ROOT, 'dist', 'native', 'windows-fullscreen.exe');
+const fullscreenAvailable = process.platform === 'win32' && existsSync(FULLSCREEN_HELPER);
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; media-src 'none'; worker-src 'none'";
 const MIME_TYPES = Object.freeze({
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -58,9 +63,74 @@ let userHidden = false;
 let contextMenuOpen = false;
 let clickThroughActive = false;
 let settingsBeforePause = false;
+let fullscreenMonitor = null;
+let fullscreenSnapshot = null;
+let fullscreenError = null;
 const pauses = new Set();
 
 function paused() { return pauses.size > 0; }
+function fullscreenWanted() {
+  return !quitting && fullscreenAvailable && hasTray() && preferences.settings.autoHideFullscreen
+    && !pauses.has('locked') && !pauses.has('suspended');
+}
+
+function applyFullscreenSnapshot(monitor) {
+  fullscreenSnapshot = monitor;
+  let suppress = false;
+  if (monitor && fullscreenWanted() && isAlive(petWindow)) {
+    try {
+      // Native monitor coordinates are physical pixels. Convert a point through
+      // Electron; multiplying mixed-DPI desktop origins by scale is incorrect.
+      const center = screen.screenToDipPoint({
+        x: Math.round(monitor.x + monitor.width / 2),
+        y: Math.round(monitor.y + monitor.height / 2),
+      });
+      const display = screen.getAllDisplays().find((item) => hitTest(center, item.bounds));
+      suppress = Boolean(display && screen.getDisplayMatching(normalBounds()).id === display.id);
+    } catch { /* A changed/unavailable display must fail open. */ }
+  }
+  if (suppress && !pauses.has('fullscreen')) pauseDesktop('fullscreen');
+  else if (!suppress && pauses.has('fullscreen')) resumeDesktop('fullscreen');
+}
+
+function stopFullscreenMonitor() {
+  const monitor = fullscreenMonitor;
+  fullscreenMonitor = null; // Ignore callbacks from an intentionally stopped child.
+  if (monitor) monitor.stop();
+  applyFullscreenSnapshot(null);
+}
+
+function updateFullscreenMonitor() {
+  // This has its own heartbeat: the desktop/animation timer stops while hidden.
+  if (!fullscreenWanted()) { stopFullscreenMonitor(); return; }
+  if (fullscreenMonitor) return;
+  const monitor = createFullscreenMonitor({
+    helperPath: FULLSCREEN_HELPER,
+    onChange(value) {
+      if (fullscreenMonitor !== monitor) return;
+      if (!hasTray()) {
+        preferences.settings.autoHideFullscreen = false;
+        if (isAlive(petWindow)) petWindow.setSkipTaskbar(false);
+        stopFullscreenMonitor(); savePreferences(); updateTrayMenu(); publishState();
+        return;
+      }
+      applyFullscreenSnapshot(value);
+    },
+    onError() {
+      if (fullscreenMonitor !== monitor) return;
+      fullscreenError = '全屏检测暂时不可用，已关闭自动隐藏；可重新开启后再试。';
+      preferences.settings.autoHideFullscreen = false;
+      stopFullscreenMonitor(); savePreferences(); updateTrayMenu(); publishState();
+    },
+  });
+  fullscreenMonitor = monitor;
+  monitor.start();
+}
+
+function disableFullscreenAutoHide() {
+  preferences.settings.autoHideFullscreen = false;
+  stopFullscreenMonitor();
+}
 function normalBounds() {
   if (!isAlive(petWindow)) return null;
   if (dock) {
@@ -159,21 +229,24 @@ function pauseDesktop(reason) {
   pauses.add(reason);
   stopDrag();
   if (dock) dock.hideAt = null;
+  // An existing settings window may still be waiting for ready-to-show.
   if (first) settingsBeforePause = Boolean(isAlive(settingsWindow));
   if (isAlive(settingsWindow)) settingsWindow.hide();
   if (isAlive(petWindow)) petWindow.hide();
   applyClickThrough(); updateDesktopTimer(); publishState();
+  if (reason !== 'fullscreen') updateFullscreenMonitor();
 }
 
 function resumeDesktop(reason) {
   if (quitting) return;
   pauses.delete(reason);
-  if (paused()) return;
+  if (paused()) { if (reason !== 'fullscreen') updateFullscreenMonitor(); return; }
   clampPetPosition();
   if (!userHidden && isAlive(petWindow)) petWindow.showInactive();
   if (settingsBeforePause && isAlive(settingsWindow)) settingsWindow.showInactive();
   settingsBeforePause = false;
   applyClickThrough(); updateDesktopTimer(); publishState();
+  if (reason !== 'fullscreen') updateFullscreenMonitor();
 }
 
 function isAlive(window) { return window && !window.isDestroyed(); }
@@ -188,6 +261,9 @@ function state() {
     version: VERSION,
     dock: dock ? { edge: dock.edge, collapsed: dock.collapsed } : null,
     clickThroughActive,
+    fullscreenAvailable,
+    fullscreenSuppressed: pauses.has('fullscreen'),
+    fullscreenError,
   };
 }
 
@@ -284,6 +360,7 @@ function restorePet() {
   userHidden = false;
   // Tray, reset and second-instance are unconditional recovery routes.
   preferences.settings.clickThrough = false;
+  disableFullscreenAutoHide();
   undockPet();
   if (!paused()) {
     if (petWindow.isMinimized()) petWindow.restore();
@@ -305,6 +382,7 @@ function quit() {
   quitting = true;
   stopDrag();
   clearInterval(desktopTimer); desktopTimer = null;
+  stopFullscreenMonitor();
   rememberPosition(true);
   app.quit();
 }
@@ -312,9 +390,13 @@ function quit() {
 function applySettings(patch) {
   const clean = validateSettingsPatch(patch);
   if (clean.clickThrough && !hasTray()) throw new Error('系统托盘不可用，无法安全开启点击穿透。');
+  if (clean.autoHideFullscreen && (!fullscreenAvailable || !hasTray())) {
+    throw new Error('全屏自动隐藏需要 Windows 检测组件和可用系统托盘。');
+  }
   stopDrag();
   const old = normalBounds();
   preferences.settings = { ...preferences.settings, ...clean };
+  if (Object.hasOwn(clean, 'autoHideFullscreen')) fullscreenError = null;
   if (dock && !preferences.settings.edgeDock) undockPet();
   if (isAlive(petWindow)) {
     const size = petSize(preferences.settings.scale);
@@ -332,6 +414,8 @@ function applySettings(patch) {
     petWindow.setAlwaysOnTop(preferences.settings.alwaysOnTop);
   }
   applyClickThrough(); updateDesktopTimer();
+  updateFullscreenMonitor();
+  if (fullscreenMonitor) applyFullscreenSnapshot(fullscreenSnapshot);
   savePreferences(); updateTrayMenu(); publishState();
   return state();
 }
@@ -373,6 +457,8 @@ function menuTemplate() {
       click: (item) => applySettings({ alwaysOnTop: item.checked }) },
     { label: '边缘收纳', type: 'checkbox', checked: preferences.settings.edgeDock,
       click: (item) => applySettings({ edgeDock: item.checked }) },
+    { label: '全屏时自动隐藏（实验）', type: 'checkbox', checked: preferences.settings.autoHideFullscreen,
+      enabled: fullscreenAvailable && hasTray(), click: (item) => applySettings({ autoHideFullscreen: item.checked }) },
     { label: '点击穿透（点托盘恢复）', type: 'checkbox', checked: preferences.settings.clickThrough, enabled: hasTray(),
       click: (item) => applySettings({ clickThrough: item.checked }) },
     { label: '移出边缘收纳', enabled: Boolean(dock), click: restorePet },
@@ -618,7 +704,10 @@ function createPetWindow() {
 }
 
 function showSettings() {
-  if (quitting || paused()) return;
+  if (quitting || pauses.has('locked') || pauses.has('suspended')) return;
+  if (pauses.has('fullscreen')) {
+    disableFullscreenAutoHide(); savePreferences(); updateTrayMenu(); publishState();
+  }
   stopDrag();
   if (dock) { dock.hideAt = null; if (dock.collapsed) setDockCollapsed(false); }
   if (isAlive(settingsWindow)) {
@@ -652,6 +741,7 @@ if (!app.requestSingleInstanceLock()) {
     stopDrag();
     clearTimeout(positionSaveTimer);
     clearInterval(desktopTimer); desktopTimer = null;
+    stopFullscreenMonitor();
     rememberPosition(true);
   });
   app.on('will-quit', () => { if (hasTray()) tray.destroy(); });
@@ -663,6 +753,7 @@ if (!app.requestSingleInstanceLock()) {
     preferences = store.load();
     // Intentionally never start in click-through mode, even if enabled last run.
     preferences.settings.clickThrough = false;
+    if (!fullscreenAvailable) preferences.settings.autoHideFullscreen = false;
     powerMonitor.on('lock-screen', () => pauseDesktop('locked'));
     powerMonitor.on('unlock-screen', () => resumeDesktop('locked'));
     powerMonitor.on('suspend', () => pauseDesktop('suspended'));
@@ -675,8 +766,14 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(null);
     createPetWindow();
     createTray();
+    if (!hasTray()) preferences.settings.autoHideFullscreen = false;
+    updateFullscreenMonitor();
     for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
-      screen.on(eventName, () => { stopDrag(); if (dock) dock.hideAt = null; clampPetPosition(); });
+      screen.on(eventName, () => {
+        stopDrag(); if (dock) dock.hideAt = null; clampPetPosition();
+        // Discard the old physical topology until the next native heartbeat.
+        applyFullscreenSnapshot(null);
+      });
     }
   }).catch((error) => {
     console.error('Unable to start Andromeda:', error);

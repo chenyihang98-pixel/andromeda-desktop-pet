@@ -6,6 +6,8 @@ Repository: https://github.com/chenyihang98-pixel/andromeda-desktop-pet
 
 Continue from the latest `main`, which already includes the unpublished Windows fixes in commit `537f706882903d05623df8adf065132405d8b97b`. The downloadable `v0.2.0` release remains at `ff316368f6c100c8489940dec0cf3275816a7b2a` and does not include those fixes. The package version is still `0.2.0`; a local build of `main` is not the original release artifact. Before editing, resolve `main` and the tag again, record their exact SHAs, and inspect intervening changes. See the release's `SHA256SUMS.txt` for original artifact identities. Keep earlier tags and assets intact. The release's attached English handoff is a historical snapshot; this source document is the current continuation guide.
 
+The fullscreen continuation began at `1dc3607f9c896eb0711abff0226e39b89f919f80` (the owner's concise documentation revision). Current source includes experimental Windows fullscreen auto-hide; no binary release contains it yet. Its validation record identifies the pre-commit source baseline and file hashes. Preserve the owner's revised prose and inspect tracked and untracked changes before continuing. The local modified build still reports `0.2.0` and differs from the published v0.2.0 artifact.
+
 The owner requested practical evolution of known limitations, especially: drag the pet to an edge, tuck it away behind a small hover handle, reveal on hover, retract after leaving, and drag back out. Keep the calm stationary default and original art. Work only in this repository. Public visibility is not an open-source license: retain `UNLICENSED` and `NOTICE.md` unless the owner separately authorizes a change.
 
 ## Implemented in the original v0.2.0 release
@@ -44,15 +46,21 @@ The original release ZIP is useful as a regression baseline but predates the fix
 
 Acceptance: no stranded/invisible pet; no unexpected global click interception; no focus stealing on hover/unlock; no ghost input rectangle on an adjacent monitor; every entry state has a reliable tray/reset recovery route. Add focused regression tests for defects before marking the matrix verified. Never disable OS security to run the program.
 
-## Priority 2: other-application fullscreen auto-hide (not implemented)
+## Priority 2: validate the Windows fullscreen experiment
 
 Electron `enter-full-screen` only concerns an Electron window, not arbitrary applications. Do not use it as global detection. Do not claim a maximized window or desktop is fullscreen just because its size looks similar.
 
-A Windows-only opt-in implementation may use a small audited native helper/module that checks the foreground HWND, window rectangle, nearest monitor, process ownership, minimized/cloaked windows, and shell/desktop exclusions. Consider an event hook or bounded low-rate polling; avoid screenshots, window-title logging, command interpolation, or admin rights. Compare physical coordinates consistently before converting to Electron DIP. A bundled helper introduces supply-chain/build/security work and must be reviewed, not downloaded and executed at runtime.
+The current source implements a default-off Windows option using first-party `native/windows-fullscreen.cs` and `src/fullscreen-monitor.cjs`, without additional third-party packages. A usable tray and bundled helper are required. The helper samples only the foreground top-level window every 500 ms. Window, visible frame and client bounds must match the monitor within a 2-physical-pixel tolerance. It conservatively excludes ordinary maximized, minimized, invisible, cloaked, decorated, child, owned, tool, non-activating, shell/desktop and own-process windows. These rules can miss games or players; background fullscreen applications are outside its scope. Do not broaden the rules merely to make a synthetic fixture pass.
 
-Model `fullscreen` as another suppression reason alongside `locked` and `suspended`. Track per-display scope. When fullscreen ends, preserve manual-hidden state and restore without focus. Manual tray recovery must be predictable. Test borderless and exclusive games, video players, maximized ordinary windows, task switcher, desktop, secondary-screen fullscreen, UAC secure desktop, and RDP. Measure overhead. Default it off until verified.
+The helper requests Per-Monitor V2 DPI awareness and returns only a versioned fullscreen status and physical monitor rectangle. Main converts the monitor center with `screen.screenToDipPoint` and suppresses only on the pet's display. It does not read window titles, content or executable paths, take screenshots, log detection history, access the network or request administrator privileges. The supervisor launches a fixed path with separate arguments, `shell:false` and `windowsHide:true`; validates bounded newline JSON; and fails open on malformed output, exit or a 3-second heartbeat timeout, disabling the setting without a respawn loop.
 
-Acceptance: documented false-positive/negative behavior, no window-title/contents collection, reliable restore, tests for event ordering, and a passing Windows native matrix. Ask for owner approval before adding material dependencies or broadening platform/security scope.
+`fullscreen` is an independent suppression reason alongside `locked` and `suspended`. Lock/suspend stops the helper. Restoration preserves manual-hidden state and uses `showInactive`. Explicit tray restore, reset, second-instance activation and manual actions disable fullscreen auto-hide; opening settings while fullscreen-suppressed also disables it. Tray loss must restore a recovery route. Test ordering and cleanup rather than treating helper policy fixtures as OS proof.
+
+Build source: `scripts/build-windows-helper.cjs`, `scripts/before-pack.cjs`, and `native/windows-fullscreen.manifest`. Windows development `npm start` compiles the helper using the inbox .NET Framework 4 C# compiler; a Windows package build recompiles it and includes it through `extraResources` at `resources/native/windows-fullscreen.exe`. Execution uses the system .NET Framework runtime. The installed app never downloads or compiles the helper. Current helper builds support Windows x64 only, and Windows cross-builds from Linux explicitly fail. Non-Windows development skips the helper and disables this feature.
+
+Native fullscreen windows can retain `WS_MAXIMIZE` / `IsZoomed`; never exclude them on that flag alone. Caption/frame styles and all three full-monitor rectangles distinguish ordinary maximized windows. A controlled Electron fixture exposed this case; see `docs/FULLSCREEN-QA-2026-10-04.md` for the narrow validation scope.
+
+Acceptance remains incomplete: test borderless and exclusive games, video players, maximized ordinary windows, task switcher, desktop, secondary-screen fullscreen, mixed DPI, UAC secure desktop, lock/suspend overlap and RDP; measure overhead and record false positives/negatives. Automated, browser, helper-policy and limited native probe results must be reported separately from complete native acceptance. Keep the option off by default until verified. Ask for owner approval before adding material dependencies or broadening platform/security scope.
 
 ## Priority 3: signing and update distribution (not solved by source code)
 
@@ -76,6 +84,8 @@ Electron still dominates package size after locale trimming. Measure release ZIP
 
 Current click-through affects the whole window, not transparent pixels. Pixel-aware hit testing would need a stable sprite alpha mask, scaled canvas geometry, toolbar/handle exceptions, mouse-routing verification, and fail-open recovery. Test animated sprite silhouettes and mixed DPI; do not make hover-dependent click-through toggle loops that trap the cursor or make controls unreachable.
 
+Treat sprite hit testing as the next separate feature after the fullscreen work is reviewed. A conservative union alpha mask is a possible Windows prototype: Electron `setShape` clips both rendering and input, so preserve animated silhouettes and controls, and disclose that a union is not exact current-frame transparency. It has not been implemented here. Keep signing/automatic updates dependent on the owner's publisher and trust-model choices, other platforms dependent on appropriate hardware validation, and any lightweight shell migration as a separate measured prototype.
+
 ## Working and release checklist
 
 ```sh
@@ -88,5 +98,7 @@ npm run pack:assets
 ```
 
 `test:ui` requires a permitted local HTTP server and supported Chromium. Do not work around denied sandbox/browser access. Use a suitable authorized environment instead, or state the limit.
+
+Run `build:win` on Windows with the .NET Framework compiler/runtime available. Record the helper's policy self-tests separately from real foreground-window observations. For uncommitted source, identify the base SHA plus the actual working diff/source hashes; a base commit alone does not identify the modified build. Do not publish a ZIP, move tags, or replace v0.2.0 assets as part of this local feature work.
 
 Before publishing: verify final ASAR source against the exact remote commit, inspect ZIP contents and Electron licenses, verify the untouched atlas hash, run aggregate checks after the last source edit, record SHA-256 for all assets, and retain earlier releases. Release only inside this repository under the owner's current authorization. Do not widen permissions, grant a license, create paid infrastructure, or contact third parties autonomously. Include implemented changes, remaining limitations, and precise test evidence in release notes.

@@ -23,9 +23,22 @@ const ok=(actual,expected)=>{assert.deepEqual(actual,expected);checks++;};
 async function setup(page){
   await page.addInitScript(()=>{
     Math.random=()=>0;
-    window.calls=[];window.appState={settings:{scale:1.25,motion:'quiet',gaze:false,alwaysOnTop:true,edgeDock:true,globalGaze:false,clickThrough:false},visible:true,trayAvailable:true,persistenceError:null,version:'0.2.0',dock:null,clickThroughActive:false};
+    window.calls=[];window.appState={settings:{scale:1.25,motion:'quiet',gaze:false,alwaysOnTop:true,edgeDock:true,globalGaze:false,clickThrough:false,autoHideFullscreen:false},visible:true,trayAvailable:true,fullscreenAvailable:true,fullscreenSuppressed:false,fullscreenError:null,persistenceError:null,version:'0.2.0',dock:null,clickThroughActive:false};
     window.andromeda={getState:async()=>window.appState,setSettings:async p=>{Object.assign(window.appState.settings,p);window.stateCallback?.(window.appState);return window.appState;},onState:fn=>{window.stateCallback=fn;},onAction:fn=>{window.actionCallback=fn;},onGaze:fn=>{window.gazeCallback=fn;},undock:async()=>{window.calls.push('undock');window.appState.dock=null;window.stateCallback?.(window.appState);return window.appState;},openReleases:async()=>window.calls.push('releases'),showSettings:()=>window.calls.push('settings'),hide:()=>window.calls.push('hide'),quit:()=>window.calls.push('quit'),resetPosition:()=>window.calls.push('reset'),playAction:a=>window.calls.push(a),startDrag:()=>window.calls.push('drag-start'),drag:()=>window.calls.push('drag'),endDrag:()=>window.calls.push('drag-end'),cancelDrag:()=>window.calls.push('drag-cancel')};
   });
+}
+async function emulateReducedMotion(page,reducedMotion){
+  // emulateMedia updates the query before Chromium dispatches its change event.
+  // Wait for that event so the renderer's earlier neutral() listener cannot
+  // overwrite an action/gaze pose injected immediately after the transition.
+  await page.evaluate(reduced=>{
+    const query=matchMedia('(prefers-reduced-motion: reduce)');
+    window.motionMediaChanged=query.matches===reduced?Promise.resolve():new Promise(resolve=>{
+      query.addEventListener('change',()=>resolve(),{once:true});
+    });
+  },reducedMotion==='reduce');
+  await page.emulateMedia({reducedMotion});
+  await page.evaluate(async()=>{await window.motionMediaChanged;delete window.motionMediaChanged;});
 }
 try{
   const page=await browser.newPage({viewport:{width:240,height:260},deviceScaleFactor:1});
@@ -47,9 +60,9 @@ try{
   ok(await page.locator('#pet').getAttribute('data-row'),'9');ok(await page.locator('#pet').getAttribute('data-column'),'4');
   await page.evaluate(()=>window.andromeda.setSettings({gaze:false,motion:'still'}));await page.clock.runFor(120000);
   ok(await page.locator('#pet').getAttribute('data-row'),'0');ok(await page.locator('#pet').getAttribute('data-column'),'0');
-  await page.emulateMedia({reducedMotion:'reduce'});await page.evaluate(()=>window.actionCallback('jump'));ok(await page.locator('#pet').getAttribute('data-row'),'4');
+  await emulateReducedMotion(page,'reduce');await page.evaluate(()=>window.actionCallback('jump'));ok(await page.locator('#pet').getAttribute('data-row'),'4');
   await page.clock.runFor(950);ok(await page.locator('#pet').getAttribute('data-row'),'0');ok(errors,[]);
-  await page.emulateMedia({reducedMotion:'no-preference'});
+  await emulateReducedMotion(page,'no-preference');
   await page.evaluate(()=>window.andromeda.setSettings({globalGaze:true,motion:'quiet',gaze:true}));
   await page.evaluate(()=>window.gazeCallback({x:100,y:0}));
   ok(await page.locator('#pet').getAttribute('data-row'),'9');ok(await page.locator('#pet').getAttribute('data-column'),'4');
@@ -80,6 +93,16 @@ try{
   await settings.locator('#gaze').check();ok(await settings.evaluate(()=>window.appState.settings.gaze),true);
   await settings.locator('#globalGaze').check();ok(await settings.evaluate(()=>window.appState.settings.globalGaze),true);
   await settings.locator('#edgeDock').uncheck();ok(await settings.evaluate(()=>window.appState.settings.edgeDock),false);
+  ok(await settings.locator('#autoHideFullscreen').isChecked(),false);
+  await settings.locator('#autoHideFullscreen').check();ok(await settings.evaluate(()=>window.appState.settings.autoHideFullscreen),true);
+  await settings.evaluate(()=>{window.appState.fullscreenSuppressed=true;window.stateCallback(window.appState);});
+  ok((await settings.locator('#desktop-state').textContent()).includes('全屏中'),true);
+  await settings.evaluate(()=>{window.appState.fullscreenSuppressed=false;window.appState.fullscreenError='检测失败，已关闭自动隐藏';window.stateCallback(window.appState);});
+  ok((await settings.locator('#fullscreen-help').textContent()).includes('检测失败'),true);
+  await settings.evaluate(()=>{window.appState.fullscreenAvailable=false;window.stateCallback(window.appState);});
+  ok(await settings.locator('#autoHideFullscreen').isDisabled(),true);
+  await settings.evaluate(()=>{window.appState.fullscreenAvailable=true;window.appState.fullscreenError=null;window.stateCallback(window.appState);});
+  ok(await settings.locator('#autoHideFullscreen').isEnabled(),true);
   await settings.locator('#clickThrough').check();ok(await settings.evaluate(()=>window.appState.settings.clickThrough),true);
   ok((await settings.locator('#click-through-help').textContent()).includes('关闭穿透并解除停靠'),true);
   await settings.locator('#releases').click();ok((await settings.evaluate(()=>window.calls)).includes('releases'),true);
@@ -89,6 +112,7 @@ try{
   for(const action of ['wave','jump','wait','review']){await settings.locator(`[data-action="${action}"]`).click();ok((await settings.evaluate(()=>window.calls)).includes(action),true);}
   for(const action of ['reset','hide','quit']){await settings.locator('#'+action).click();ok((await settings.evaluate(()=>window.calls)).includes(action),true);}
   await settings.evaluate(()=>{window.appState.trayAvailable=false;window.appState.persistenceError='failed';window.stateCallback(window.appState);});ok(await settings.locator('#hide').isDisabled(),true);ok(await settings.locator('#clickThrough').isDisabled(),true);ok((await settings.locator('#status').textContent()).includes('无法保存'),true);
+  ok(await settings.locator('#autoHideFullscreen').isDisabled(),true);
   await settings.evaluate(()=>{window.andromeda.openReleases=async()=>{throw new Error('simulated release failure');};});
   await settings.locator('#releases').click();ok((await settings.locator('#status').textContent()).includes('未能完成'),true);ok(await settings.locator('#releases').isEnabled(),true);
   await settings.setViewportSize({width:350,height:740});

@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   edgeDock: true,
   globalGaze: false,
   clickThrough: false,
+  autoHideFullscreen: false,
 });
 const MOTIONS = Object.freeze(['quiet', 'still', 'lively']);
 const SETTINGS_KEYS = Object.freeze(Object.keys(DEFAULT_SETTINGS));
@@ -32,7 +33,7 @@ function sanitizeSettings(value) {
     settings.scale = Math.round(Math.min(MAX_SCALE, Math.max(MIN_SCALE, value.scale)) * 100) / 100;
   }
   if (MOTIONS.includes(value.motion)) settings.motion = value.motion;
-  for (const key of ['gaze', 'alwaysOnTop', 'edgeDock', 'globalGaze', 'clickThrough']) {
+  for (const key of ['gaze', 'alwaysOnTop', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen']) {
     if (typeof value[key] === 'boolean') settings[key] = value[key];
   }
   return settings;
@@ -52,7 +53,7 @@ function validateSettingsPatch(value) {
       throw new TypeError('缩放范围为 0.75–2');
     }
     if (key === 'motion' && !MOTIONS.includes(item)) throw new TypeError('无效的动作模式');
-    if (['gaze', 'alwaysOnTop', 'edgeDock', 'globalGaze', 'clickThrough'].includes(key) && typeof item !== 'boolean') {
+    if (['gaze', 'alwaysOnTop', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen'].includes(key) && typeof item !== 'boolean') {
       throw new TypeError('开关设置必须为布尔值');
     }
   }

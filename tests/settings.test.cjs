@@ -14,7 +14,7 @@ const primary = { workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 const left = { workArea: { x: -1280, y: 0, width: 1280, height: 984 } };
 
 test('default settings are quiet, medium sized, with no cursor gaze', () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { scale: 1.25, motion: 'quiet', gaze: false, alwaysOnTop: true, edgeDock: true, globalGaze: false, clickThrough: false });
+  assert.deepEqual(DEFAULT_SETTINGS, { scale: 1.25, motion: 'quiet', gaze: false, alwaysOnTop: true, edgeDock: true, globalGaze: false, clickThrough: false, autoHideFullscreen: false });
   assert.ok(Object.isFrozen(DEFAULT_SETTINGS));
   assert.deepEqual(sanitizeSettings(null), DEFAULT_SETTINGS);
 });
@@ -149,7 +149,8 @@ test('v0.1 settings migrate safely and new toggles reject non-boolean values', (
   assert.equal(old.settings.edgeDock, true);
   assert.equal(old.settings.globalGaze, false);
   assert.equal(old.settings.clickThrough, false);
-  for (const key of ['edgeDock', 'globalGaze', 'clickThrough']) {
+  assert.equal(old.settings.autoHideFullscreen, false);
+  for (const key of ['edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen']) {
     assert.deepEqual(validateSettingsPatch({ [key]: true }), { [key]: true });
     assert.throws(() => validateSettingsPatch({ [key]: 'true' }), TypeError);
   }

@@ -17,12 +17,12 @@ function element(dataset = {}) {
     emit(name, event = {}) { return events.get(name)?.({target: this, ...event}); },
   };
 }
-async function createSettings({trayAvailable = true, persistenceError = null, apiAvailable = true, failure = null} = {}) {
-  const ids = ['status', 'scale', 'scale-value', 'alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'version', 'hide', 'quit', 'reset', 'releases', 'click-through-help', 'desktop-state'];
+async function createSettings({trayAvailable = true, fullscreenAvailable = true, persistenceError = null, apiAvailable = true, failure = null} = {}) {
+  const ids = ['status', 'scale', 'scale-value', 'alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen', 'fullscreen-help', 'version', 'hide', 'quit', 'reset', 'releases', 'click-through-help', 'desktop-state'];
   const elements = Object.fromEntries(ids.map(id => [id, element()]));
   const motions = ['still', 'quiet', 'lively'].map(motion => element({motion}));
   const actions = ['wave', 'jump', 'wait', 'review'].map(action => element({action}));
-  let state = {settings: {motion: 'quiet', scale: 1.25, alwaysOnTop: true, gaze: false, edgeDock: true, globalGaze: false, clickThrough: false}, visible: true, trayAvailable, persistenceError, version: '0.2.0', dock: null, clickThroughActive: false};
+  let state = {settings: {motion: 'quiet', scale: 1.25, alwaysOnTop: true, gaze: false, edgeDock: true, globalGaze: false, clickThrough: false, autoHideFullscreen: false}, visible: true, trayAvailable, fullscreenAvailable, persistenceError, version: '0.2.0', dock: null, clickThroughActive: false};
   let subscriber;
   const calls = [];
   const record = async (method, ...args) => {
@@ -62,12 +62,31 @@ test('settings UI exposes v0.2 calm defaults and new toggle preferences', async 
   assert.equal(r.elements.clickThrough.checked, false);
   assert.equal(r.elements.clickThrough.disabled, false);
   assert.equal(r.elements['scale-value'].textContent, '125%');
-  for (const key of ['gaze', 'globalGaze', 'clickThrough', 'edgeDock']) {
+  for (const key of ['gaze', 'globalGaze', 'clickThrough', 'edgeDock', 'autoHideFullscreen']) {
     r.elements[key].checked = !r.elements[key].checked;
     r.elements[key].emit('change'); await flush();
     assert.equal(r.state().settings[key], key !== 'edgeDock');
   }
   assert.equal(r.state().settings.gaze, true, 'Global gaze must preserve the independent local preference');
+});
+
+test('fullscreen control exposes capability, recovery and helper failure without changing the default', async () => {
+  const r = await createSettings();
+  assert.equal(r.elements.autoHideFullscreen.checked, false);
+  assert.match(r.elements['fullscreen-help'].textContent, /部分游戏/);
+  r.update({fullscreenSuppressed: true});
+  assert.match(r.elements['desktop-state'].textContent, /全屏中/);
+  r.update({fullscreenSuppressed: false, fullscreenError: '检测失败，已关闭'});
+  assert.equal(r.elements['fullscreen-help'].textContent, '检测失败，已关闭');
+  for (const options of [{fullscreenAvailable: false}, {trayAvailable: false}]) {
+    const unavailable = await createSettings(options);
+    assert.equal(unavailable.elements.autoHideFullscreen.disabled, true);
+    unavailable.elements.autoHideFullscreen.checked = true;
+    unavailable.elements.autoHideFullscreen.emit('change'); await flush();
+    assert.equal(unavailable.elements.autoHideFullscreen.checked, false);
+    assert.deepEqual(unavailable.calls, []);
+    assert.match(unavailable.elements['fullscreen-help'].textContent, /禁用/);
+  }
 });
 
 test('settings UI disables click-through and hide when no tray is available', async () => {

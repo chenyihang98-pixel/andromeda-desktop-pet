@@ -1,0 +1,114 @@
+{
+  "timestamp": "2026-10-03T15:16:44.772Z",
+  "sourceBase": "1dc3607f9c896eb0711abff0226e39b89f919f80",
+  "workingTreeDirty": true,
+  "platform": "win32",
+  "architecture": "x64",
+  "osRelease": "10.0.26200",
+  "helperSha256": "1dcd51195e76c5c884bfcf6c1ca7132babc2806a90e9ddd7bbc4629ad323b4cf",
+  "scope": "Controlled Electron fixture only; no game, video-player, real mouse, mixed-DPI, lock/suspend, RDP or UAC acceptance.",
+  "checks": [
+    {
+      "state": "normal",
+      "focused": true,
+      "scaleFactor": 2,
+      "dipBounds": {
+        "x": 100,
+        "y": 100,
+        "width": 640,
+        "height": 480
+      },
+      "nativeFullscreen": false,
+      "nativeMaximized": false,
+      "physicalMonitor": {
+        "x": 0,
+        "y": 0,
+        "width": 3840,
+        "height": 2160
+      },
+      "samples": 2,
+      "detectedFullscreen": [
+        false,
+        false
+      ],
+      "passed": true
+    },
+    {
+      "state": "maximized",
+      "focused": true,
+      "scaleFactor": 2,
+      "dipBounds": {
+        "x": -7,
+        "y": -7,
+        "width": 1934,
+        "height": 1046
+      },
+      "nativeFullscreen": false,
+      "nativeMaximized": true,
+      "physicalMonitor": {
+        "x": 0,
+        "y": 0,
+        "width": 3840,
+        "height": 2160
+      },
+      "samples": 2,
+      "detectedFullscreen": [
+        false,
+        false
+      ],
+      "passed": true
+    },
+    {
+      "state": "fullscreen",
+      "focused": true,
+      "scaleFactor": 2,
+      "dipBounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "nativeFullscreen": true,
+      "nativeMaximized": false,
+      "physicalMonitor": {
+        "x": 0,
+        "y": 0,
+        "width": 3840,
+        "height": 2160
+      },
+      "samples": 2,
+      "detectedFullscreen": [
+        true,
+        true
+      ],
+      "passed": true
+    },
+    {
+      "state": "restored",
+      "focused": true,
+      "scaleFactor": 2,
+      "dipBounds": {
+        "x": 100,
+        "y": 100,
+        "width": 640,
+        "height": 480
+      },
+      "nativeFullscreen": false,
+      "nativeMaximized": false,
+      "physicalMonitor": {
+        "x": 0,
+        "y": 0,
+        "width": 3840,
+        "height": 2160
+      },
+      "samples": 2,
+      "detectedFullscreen": [
+        false,
+        false
+      ],
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "fixtureExited": true
+}

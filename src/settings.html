@@ -14,6 +14,8 @@
 <section class="size-section"><label for="scale"><span>显示大小</span><output id="scale-value" for="scale">125%</output></label><input id="scale" type="range" min="0.75" max="2" step="0.05" value="1.25" aria-describedby="scale-help"><p class="note" id="scale-help">拖住星璇即可移动；双击角色可打开此面板</p></section>
 <section class="toggles" aria-label="桌面陪伴设置">
 <label><span>保持在窗口上方<small>可随时关闭置顶</small></span><input id="alwaysOnTop" type="checkbox" checked></label>
+<label><span>全屏时自动隐藏（实验）<small>同一屏幕的前台应用全屏时暂时隐藏星璇</small></span><input id="autoHideFullscreen" type="checkbox" aria-describedby="fullscreen-help"></label>
+<p class="note inset-note" id="fullscreen-help">默认关闭，仅 Windows 可用。结束全屏后自动恢复；点托盘显示星璇会关闭此选项。部分游戏可能无法识别</p>
 <label><span>靠边收起<small>拖到屏幕边缘停靠，移开鼠标后收起为星标</small></span><input id="edgeDock" type="checkbox" checked aria-describedby="dock-help"></label>
 <p class="note inset-note" id="dock-help">悬停星标展开；点击星标、向内拖动或按 Esc 解除停靠</p>
 <label><span>近距离看向鼠标<small>鼠标移入角色区域时，轻轻转头</small></span><input id="gaze" type="checkbox"></label>
