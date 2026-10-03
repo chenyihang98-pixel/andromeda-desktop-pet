@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { DOCK_THRESHOLD, HIDE_DELAY, dockAt, dockBounds, hitTest, findDisplay } = require('../src/docking.cjs');
+const { DOCK_THRESHOLD, HIDE_DELAY, dockAt, dockBounds, fitDockBounds, hitTest, findDisplay } = require('../src/docking.cjs');
 
 const primary = { id: 1, scaleFactor: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 const left = { id: 2, scaleFactor: 2, workArea: { x: -1280, y: -200, width: 1280, height: 984 } };
@@ -283,4 +283,33 @@ test('deterministic geometry sweep keeps every handle and expanded window in its
       }
     }
   }
+});
+
+test('measured native minimum sizes are fitted to the original display and edge', () => {
+  for (const display of [primary, left, right]) {
+    for (const edge of ['left', 'right', 'top', 'bottom']) {
+      for (const ratio of [0, 0.5, 1]) {
+        const descriptor = dock(edge, ratio, display.id);
+        const requested = dockBounds(descriptor, size, [display]).collapsed;
+        const measured = {...requested, width: Math.max(30, requested.width), height: Math.max(36, requested.height)};
+        const fitted = fitDockBounds(descriptor, requested, measured, [primary, left, right]);
+        assertContained(fitted, display.workArea);
+        assert.equal(fitted.width, measured.width);
+        assert.equal(fitted.height, measured.height);
+        if (edge === 'left') assert.equal(fitted.x, display.workArea.x);
+        if (edge === 'right') assert.equal(fitted.x + fitted.width, display.workArea.x + display.workArea.width);
+        if (edge === 'top') assert.equal(fitted.y, display.workArea.y);
+        if (edge === 'bottom') assert.equal(fitted.y + fitted.height, display.workArea.y + display.workArea.height);
+      }
+    }
+  }
+});
+
+test('native fitting rejects removed displays and sizes that cannot fit without moving displays', () => {
+  const descriptor = dock('right', 0.5, left.id);
+  const requested = dockBounds(descriptor, size, [left]).collapsed;
+  assert.equal(fitDockBounds(descriptor, requested, requested, [primary]), null);
+  assert.equal(fitDockBounds(descriptor, requested, {...requested, width: left.workArea.width + 1}, [left, primary]), null);
+  assert.equal(fitDockBounds(descriptor, requested, {...requested, height: left.workArea.height + 1}, [left, primary]), null);
+  assert.equal(fitDockBounds(descriptor, requested, {...requested, width: NaN}, [left]), null);
 });

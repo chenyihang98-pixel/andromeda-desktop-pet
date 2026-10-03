@@ -24,7 +24,7 @@ Read `README.md`, `docs/ARCHITECTURE.md`, and `docs/TESTING.md` before changing 
 
 ## Verification boundary
 
-The owner confirmed v0.1.0 on their Windows computer. That does **not** verify v0.2.0. The current build/test machine is Linux. Unit and Electron/renderer adapter tests are useful regression evidence, not native Windows mouse routing, compositor, tray, lock, RDP, or mixed-DPI proof. Exact current automated results and browser-test limitations are recorded in `docs/TESTING.md`. Do not turn a mock pass, cross-build, or screenshot into a native Windows QA claim.
+The owner confirmed v0.1.0 on their Windows computer. That does **not** verify v0.2.0. The original release build/test machine was Linux. A subsequent Windows 11 continuation is recorded in `docs/WINDOWS-QA-2026-10-03.md`, including exact baseline refs, local changes, automated checks, and limited native observations. Unit and Electron/renderer adapter tests are useful regression evidence, not native Windows mouse routing, compositor, tray, lock, RDP, or mixed-DPI proof. Exact automated results and browser-test limitations are recorded in `docs/TESTING.md`. Do not turn a mock pass, cross-build, or screenshot into a native Windows QA claim. Priority 1 remains incomplete until the outstanding native matrix is exercised.
 
 ## Priority 1: native Windows validation and fixes
 

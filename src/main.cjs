@@ -8,6 +8,7 @@ const {
   createSettingsStore, validateSettingsPatch, petSize, clampPosition, defaultPosition,
 } = require('./settings.cjs');
 const { dockAt, dockBounds, hitTest, HIDE_DELAY } = require('./docking.cjs');
+const { applyDockWindowBounds } = require('./dock-window.cjs');
 
 const RELEASES_URL = 'https://github.com/chenyihang98-pixel/andromeda-desktop-pet/releases';
 const VERSION = require('../package.json').version;
@@ -94,13 +95,13 @@ function updateDesktopTimer() {
 
 function setDockCollapsed(collapsed) {
   if (!dock || !isAlive(petWindow)) return;
-  const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
-  if (!layout) { undockPet(); return; }
   dock.collapsed = collapsed;
   dock.hideAt = null;
   // Collapse the real input window instead of moving a full-size invisible
   // rectangle onto an adjacent monitor. Both geometries remain inside workArea.
-  petWindow.setBounds(collapsed ? layout.collapsed : layout.expanded);
+  if (!applyDockWindowBounds(petWindow, dock, petSize(preferences.settings.scale), screen.getAllDisplays())) {
+    undockPet(); return;
+  }
   rememberPosition(true);
   applyClickThrough();
   updateTrayMenu(); publishState();
@@ -139,7 +140,7 @@ function pollDesktop() {
       dock.hideAt = Date.now() + HIDE_DELAY;
     } else if (Date.now() >= dock.hideAt) {
       setDockCollapsed(true);
-      dock.waitForLeave = false;
+      if (dock) dock.waitForLeave = false;
     }
   }
   if (preferences.settings.globalGaze && !dragSession && !dock?.collapsed) {
@@ -230,16 +231,21 @@ function rememberPosition(immediate = false) {
 function clampPetPosition() {
   if (!isAlive(petWindow)) return;
   if (dock) {
-    const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
-    if (layout) { petWindow.setBounds(dock.collapsed ? layout.collapsed : layout.expanded); rememberPosition(true); return; }
+    if (applyDockWindowBounds(petWindow, dock, petSize(preferences.settings.scale), screen.getAllDisplays())) {
+      rememberPosition(true); return;
+    }
     const position = preferences.position;
     dock = null;
     const size = petSize(preferences.settings.scale);
     petWindow.setBounds({ ...clampPosition(position, size, screen.getAllDisplays(), screen.getPrimaryDisplay()), ...size });
   } else {
     const bounds = petWindow.getBounds();
-    const position = clampPosition(bounds, bounds, screen.getAllDisplays(), screen.getPrimaryDisplay());
-    if (bounds.x !== position.x || bounds.y !== position.y) petWindow.setPosition(position.x, position.y);
+    // A dock may have shrunk to fit a tiny work area. Free windows must use
+    // the configured scale again instead of retaining those temporary bounds.
+    const size = petSize(preferences.settings.scale);
+    const position = clampPosition(bounds, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
+    if (bounds.width !== size.width || bounds.height !== size.height) petWindow.setBounds({ ...position, ...size });
+    else if (bounds.x !== position.x || bounds.y !== position.y) petWindow.setPosition(position.x, position.y);
   }
   rememberPosition(true);
   applyClickThrough(); updateDesktopTimer(); publishState();
@@ -265,7 +271,7 @@ function stopDrag(shouldDock = false) {
     if (anchor) {
       dock = { ...anchor, collapsed: false, hideAt: null, waitForLeave: false };
       setDockCollapsed(true);
-      dock.waitForLeave = hitTest(screen.getCursorScreenPoint(), petWindow.getBounds());
+      if (dock) dock.waitForLeave = hitTest(screen.getCursorScreenPoint(), petWindow.getBounds());
     }
   }
   clampPetPosition();
@@ -442,7 +448,7 @@ function registerIPC() {
     });
   }
   dragHandler('andromeda:start-drag', () => {
-    if (!petWindow.isVisible() || paused() || dock?.collapsed || clickThroughActive) return;
+    if (!petWindow.isVisible() || paused() || contextMenuOpen || dock?.collapsed || clickThroughActive) return;
     stopDrag();
     const cursor = screen.getCursorScreenPoint();
     const bounds = petWindow.getBounds();
@@ -576,6 +582,9 @@ function createPetWindow() {
   secureWindow(petWindow);
   petWindow.webContents.on('context-menu', () => {
     contextMenuOpen = true;
+    // Native menus can open without a window blur. Cancel before a queued
+    // pointer release can turn the interrupted gesture into a dock.
+    stopDrag(false);
     if (dock) dock.hideAt = null;
     Menu.buildFromTemplate(menuTemplate()).popup({ window: petWindow, callback: () => { contextMenuOpen = false; if (dock) dock.hideAt = null; } });
   });

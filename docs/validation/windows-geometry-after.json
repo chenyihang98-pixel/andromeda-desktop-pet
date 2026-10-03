@@ -1,0 +1,473 @@
+{
+  "schemaVersion": 1,
+  "scope": "native-window-geometry-only",
+  "limitations": [
+    "Standalone local Electron probe; not a packaged Andromeda application test.",
+    "Only the attached displays and their current work areas/DPI are exercised.",
+    "No mouse routing, capture, tray, focus, lock/sleep, RDP, or monitor-disconnection verification."
+  ],
+  "startedAt": "2026-10-03T11:06:44.165Z",
+  "status": "passed",
+  "environment": {
+    "platform": "win32",
+    "architecture": "x64",
+    "osRelease": "10.0.26200",
+    "osVersion": "Windows 11 Pro",
+    "electron": "44.5.1",
+    "chromium": "152.0.7977.130",
+    "node": "24.21.0"
+  },
+  "displays": [
+    {
+      "id": "display-1",
+      "primary": true,
+      "bounds": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "workArea": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1032
+      },
+      "scaleFactor": 2,
+      "rotation": 0
+    }
+  ],
+  "checks": [
+    {
+      "displayId": "display-1",
+      "edge": "left",
+      "phase": "expanded",
+      "requested": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "left",
+      "phase": "collapsed",
+      "requested": {
+        "x": 0,
+        "y": 484,
+        "width": 14,
+        "height": 64
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 0,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "expected": {
+        "x": 0,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "actual": {
+        "x": 0,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "exactRequestedSize": false,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "left",
+      "phase": "restored",
+      "requested": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 0,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "right",
+      "phase": "expanded",
+      "requested": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "right",
+      "phase": "collapsed",
+      "requested": {
+        "x": 1906,
+        "y": 484,
+        "width": 14,
+        "height": 64
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 1906,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "expected": {
+        "x": 1890,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "actual": {
+        "x": 1890,
+        "y": 484,
+        "width": 30,
+        "height": 64
+      },
+      "exactRequestedSize": false,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "right",
+      "phase": "restored",
+      "requested": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 1680,
+        "y": 386,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "top",
+      "phase": "expanded",
+      "requested": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "top",
+      "phase": "collapsed",
+      "requested": {
+        "x": 928,
+        "y": 0,
+        "width": 64,
+        "height": 14
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 928,
+        "y": 0,
+        "width": 64,
+        "height": 36
+      },
+      "expected": {
+        "x": 928,
+        "y": 0,
+        "width": 64,
+        "height": 36
+      },
+      "actual": {
+        "x": 928,
+        "y": 0,
+        "width": 64,
+        "height": 36
+      },
+      "exactRequestedSize": false,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "top",
+      "phase": "restored",
+      "requested": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 840,
+        "y": 0,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "bottom",
+      "phase": "expanded",
+      "requested": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "bottom",
+      "phase": "collapsed",
+      "requested": {
+        "x": 928,
+        "y": 1018,
+        "width": 64,
+        "height": 14
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 928,
+        "y": 1018,
+        "width": 64,
+        "height": 36
+      },
+      "expected": {
+        "x": 928,
+        "y": 996,
+        "width": 64,
+        "height": 36
+      },
+      "actual": {
+        "x": 928,
+        "y": 996,
+        "width": 64,
+        "height": 36
+      },
+      "exactRequestedSize": false,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    },
+    {
+      "displayId": "display-1",
+      "edge": "bottom",
+      "phase": "restored",
+      "requested": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "measuredBeforePositionCorrection": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "expected": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "actual": {
+        "x": 840,
+        "y": 772,
+        "width": 240,
+        "height": 260
+      },
+      "exactRequestedSize": true,
+      "stable": true,
+      "withinWorkArea": true,
+      "passed": true
+    }
+  ],
+  "source": {
+    "commit": "ff316368f6c100c8489940dec0cf3275816a7b2a",
+    "workingTreeDirty": true,
+    "sha256": {
+      "scripts/windows-smoke.cjs": "fe0655dc2696e1200051b5db4f06f59eef7d3f6740a432b93d798e7004b48e12",
+      "src/main.cjs": "f292f1042b65f02f6c71c3c154b7e5e736589568bfc0567e3c94a9c13fa079c3",
+      "src/dock-window.cjs": "4580077709c0e1f688ffd6110b1df63c4c695d21a805c478c35f8d68763738bb",
+      "src/docking.cjs": "eb7b1ccd8b60f99b8560e571a0b0cb8add0b1383ac895767dc919265b8fc8a2b",
+      "src/settings.cjs": "05dc4f579f79cc54a95912114111d6aa66898c26f28f4de0ff057a16da56428d"
+    }
+  },
+  "windowOptions": {
+    "transparent": true,
+    "frame": false,
+    "hasShadow": false,
+    "resizable": false,
+    "maximizable": false,
+    "fullscreenable": false,
+    "alwaysOnTop": true,
+    "sandbox": true,
+    "contextIsolation": true,
+    "nodeIntegration": false,
+    "mouseInputIgnored": true,
+    "applicationScale": 1.25
+  },
+  "minimumSize": [
+    240,
+    260
+  ],
+  "finishedAt": "2026-10-03T11:06:48.093Z",
+  "sanitization": {
+    "displayIds": "Replaced with report-local aliases.",
+    "profileDirectory": "Omitted temporary profile path and process identifier.",
+    "measurements": "Unchanged from the original local report."
+  }
+}

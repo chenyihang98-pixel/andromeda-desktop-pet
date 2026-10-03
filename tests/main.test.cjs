@@ -12,7 +12,7 @@ const primary = { id: 1, scaleFactor: 1, workArea: { x: 0, y: 0, width: 1920, he
 // adapter. They validate lifecycle/IPC policy without claiming native OS QA.
 async function createShell(t, {
   trayWorks = true, lockAvailable = true, displays = [primary],
-  saved = null, deferReady = false, ignoreMouseFails = false,
+  saved = null, deferReady = false, ignoreMouseFails = false, nativeMinimumSize = null,
 } = {}) {
   const { EventEmitter } = require('node:events');
   const Module = require('node:module');
@@ -100,7 +100,14 @@ async function createShell(t, {
     getBounds() { return { ...this.bounds }; }
     getPosition() { return [this.bounds.x, this.bounds.y]; }
     setPosition(x, y) { this.bounds.x = x; this.bounds.y = y; this.emit('move'); }
-    setBounds(value) { this.bounds = value; this.emit('move'); }
+    setBounds(value) {
+      this.bounds = { ...value };
+      if (nativeMinimumSize) {
+        this.bounds.width = Math.max(value.width, nativeMinimumSize.width);
+        this.bounds.height = Math.max(value.height, nativeMinimumSize.height);
+      }
+      this.emit('move');
+    }
     show() { this.calls.push(['show']); this.visible = true; this.emit('show'); }
     showInactive() { this.calls.push(['showInactive']); this.show(); }
     hide() { this.visible = false; this.emit('hide'); }
@@ -472,6 +479,28 @@ test('settings and an open native context menu prevent auto-collapse until close
   assert.equal(shell.state().dock.collapsed, true);
 });
 
+test('a native context menu cancels dragging without relying on blur or pointer cancellation', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  movePet(shell, 0, 300, null);
+  pet.webContents.emit('context-menu');
+  const bounds = pet.getBounds();
+  shell.send('end-drag');
+  assert.equal(shell.state().dock, null, 'An interrupted release must not dock');
+  assert.deepEqual(pet.getBounds(), bounds);
+
+  shell.send('start-drag');
+  shell.screen.cursor = {x: 320, y: 420};
+  shell.clock.advance(20); shell.send('drag'); shell.send('end-drag');
+  assert.deepEqual(pet.getBounds(), bounds, 'An open menu must reject queued drag starts');
+  assert.equal(shell.state().dock, null);
+  assert.equal(shell.clock.pending(), 0, 'Menu cancellation clears the drag expiry');
+
+  shell.popups.at(-1).callback();
+  movePet(shell, 0, 400);
+  assert.deepEqual(shell.state().dock, {edge: 'left', collapsed: true}, 'Dragging works again after closing the menu');
+});
+
 test('collapsed storage, scaling, reset, undock, and tray recovery keep normal pet bounds', async (t) => {
   const shell = await createShell(t);
   const pet = shell.windows[0];
@@ -519,6 +548,68 @@ test('display removal, taskbar changes, and mixed DPI preserve visible DIP geome
   pet.setPosition(1500, 700);
   shell.screen.emit('display-metrics-changed', {}, shell.screen.primary, ['workArea']);
   within(pet.getBounds(), shell.screen.primary.workArea);
+});
+
+test('undocking after a tiny work-area change restores the configured pet size', async (t) => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0], size = petSize(DEFAULT_SETTINGS.scale);
+  movePet(shell, 0, 300);
+  const tinyDisplay = {...primary, workArea: {x: 0, y: 0, width: 160, height: 180}};
+  shell.screen.displays = [tinyDisplay]; shell.screen.primary = tinyDisplay;
+  shell.screen.emit('display-metrics-changed', {}, tinyDisplay, ['workArea']);
+  within(pet.getBounds(), tinyDisplay.workArea);
+  revealHandle(shell);
+  assert.deepEqual(pet.getBounds(), tinyDisplay.workArea, 'The expanded dock still fits the tiny work area');
+
+  shell.trays[0].emit('click');
+  assert.equal(shell.state().dock, null);
+  assert.deepEqual(pet.getBounds(), {x: 0, y: 0, ...size}, 'A free pet uses its configured size and a clamped position');
+  shell.screen.displays = [primary]; shell.screen.primary = primary;
+  shell.screen.emit('display-metrics-changed', {}, primary, ['workArea']);
+  assert.deepEqual(pet.getBounds(), {x: 0, y: 0, ...size});
+  within(pet.getBounds(), primary.workArea);
+  assert.equal(shell.state().settings.scale, DEFAULT_SETTINGS.scale);
+});
+
+test('native minimum handle sizes stay on their dock edge through scaling and display changes', async (t) => {
+  for (const [edge, x, y] of [['left', 0, 300], ['right', 1680, 300], ['top', 700, 0], ['bottom', 700, 780]]) {
+    const shell = await createShell(t, {nativeMinimumSize: {width: 30, height: 36}});
+    const pet = shell.windows[0];
+    const checkEdge = area => {
+      const bounds = pet.getBounds();
+      within(bounds, area);
+      if (edge === 'left') assert.equal(bounds.x, area.x);
+      if (edge === 'right') assert.equal(bounds.x + bounds.width, area.x + area.width);
+      if (edge === 'top') assert.equal(bounds.y, area.y);
+      if (edge === 'bottom') assert.equal(bounds.y + bounds.height, area.y + area.height);
+    };
+    movePet(shell, x, y);
+    assert.deepEqual(shell.state().dock, {edge, collapsed: true});
+    assert.deepEqual([pet.bounds.width, pet.bounds.height], ['left', 'right'].includes(edge) ? [30, 64] : [64, 36]);
+    checkEdge(primary.workArea);
+    assert.deepEqual(shell.saved().position, {x, y}, 'Native handle adjustment must not overwrite the full-pet anchor');
+    shell.invoke(pet, 'set-settings', {scale: 2});
+    checkEdge(primary.workArea);
+    const changed = {...primary, workArea: {x: -720, y: -100, width: 720, height: 600}};
+    shell.screen.displays = [changed]; shell.screen.primary = changed;
+    shell.screen.emit('display-metrics-changed', {}, changed, ['workArea']);
+    checkEdge(changed.workArea);
+    revealHandle(shell);
+    assert.deepEqual([pet.bounds.width, pet.bounds.height], [384, 416]);
+    checkEdge(changed.workArea);
+  }
+});
+
+test('a native window too large for the selected work area cancels docking safely', async (t) => {
+  const tinyDisplay = {...primary, workArea: {x: 0, y: 0, width: 20, height: 20}};
+  const shell = await createShell(t, {displays: [tinyDisplay], nativeMinimumSize: {width: 30, height: 36}});
+  const pet = shell.windows[0];
+  movePet(shell, -10, -10);
+  assert.equal(shell.state().dock, null);
+  assert.equal(pet.visible, true);
+  assert.deepEqual([pet.bounds.width, pet.bounds.height], [240, 260]);
+  assert.deepEqual(pet.getPosition(), [0, 0]);
+  assert.equal(shell.clock.intervals(), 0);
 });
 
 test('power pause reasons compose in either order and resume only when all reasons clear', async (t) => {

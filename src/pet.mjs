@@ -11,6 +11,7 @@ let manifest, atlasImage;
 let settings = {motion: 'quiet', gaze: false, globalGaze: false};
 let visible = true, dock = null;
 let timer, sequence, dragging = false, pointerOver = false, ready = false;
+let dragPointerId = null;
 function cancelTimer() { clearTimeout(timer); timer = undefined; }
 function paused() { return document.hidden || !visible || Boolean(dock?.collapsed); }
 function reportError(error) {
@@ -77,7 +78,13 @@ function applyState(state) {
 }
 function finishDrag(cancelled = false) {
   if (!dragging) return;
+  const pointerId = dragPointerId;
+  // Clear ownership first: releasing capture can dispatch lostpointercapture.
+  dragPointerId = null;
   dragging = false; canvas.classList.remove('dragging');
+  try {
+    if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+  } catch { /* A hidden/destroyed surface may already have released capture. */ }
   void callAPI(cancelled ? 'cancelDrag' : 'endDrag');
   neutral();
 }
@@ -89,12 +96,16 @@ function globalGaze(point) {
 }
 canvas.addEventListener('pointerdown', event => {
   if (event.button !== 0 || paused() || dragging) return;
+  dragPointerId = event.pointerId;
   dragging = true; cancelTimer(); sequence = undefined; draw(); canvas.classList.add('dragging');
   try { canvas.setPointerCapture(event.pointerId); } catch { finishDrag(true); return; }
   void callAPI('startDrag');
 });
 canvas.addEventListener('pointermove', event => {
-  if (dragging) { void callAPI('drag'); return; }
+  if (dragging) {
+    if (event.pointerId === dragPointerId) void callAPI('drag');
+    return;
+  }
   if (settings.gaze && !settings.globalGaze && canGaze()) {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -102,9 +113,9 @@ canvas.addEventListener('pointermove', event => {
     draw(cell.row, cell.column);
   }
 });
-canvas.addEventListener('pointerup', () => finishDrag());
-canvas.addEventListener('pointercancel', () => finishDrag(true));
-canvas.addEventListener('lostpointercapture', () => finishDrag(true));
+canvas.addEventListener('pointerup', event => { if (event.pointerId === dragPointerId) finishDrag(); });
+canvas.addEventListener('pointercancel', event => { if (event.pointerId === dragPointerId) finishDrag(true); });
+canvas.addEventListener('lostpointercapture', event => { if (event.pointerId === dragPointerId) finishDrag(true); });
 canvas.addEventListener('pointerenter', () => {
   pointerOver = true;
   if (settings.gaze && !settings.globalGaze && canGaze()) cancelTimer();
@@ -128,6 +139,7 @@ document.addEventListener('keydown', event => {
   if (dock && event.key === 'Escape' && !event.repeat) { event.preventDefault(); void callAPI('undock'); }
 });
 window.addEventListener('blur', () => finishDrag(true));
+document.addEventListener('contextmenu', () => finishDrag(true));
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pointerOver = false; finishDrag(true); }
   neutral();

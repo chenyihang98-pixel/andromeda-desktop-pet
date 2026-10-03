@@ -3,6 +3,8 @@ import {createServer} from 'node:http';
 import {readFile,mkdir} from 'node:fs/promises';
 import {resolve,extname,relative} from 'node:path';
 import assert from 'node:assert/strict';
+import {findChromium} from './ui-browser.mjs';
+const executablePath=findChromium();
 const root=resolve('.');
 const mime={'.html':'text/html','.css':'text/css','.mjs':'text/javascript','.json':'application/json','.png':'image/png'};
 const server=createServer(async(req,res)=>{
@@ -13,7 +15,7 @@ const server=createServer(async(req,res)=>{
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
 const base=`http://127.0.0.1:${server.address().port}`;
 let browser;
-try { browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_PATH||'/usr/bin/chromium',args:['--no-sandbox']}); }
+try { browser=await chromium.launch({headless:true,executablePath,chromiumSandbox:true}); }
 catch (error) { await new Promise(r=>server.close(r)); throw error; }
 await mkdir('qa',{recursive:true});
 let checks=0;

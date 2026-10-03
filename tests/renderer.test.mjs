@@ -5,17 +5,29 @@ import * as animation from '../src/animation.mjs';
 
 const source = readFileSync(new URL('../src/pet.mjs', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../assets/manifest.json', import.meta.url), 'utf8'));
-const importLine = /^import \{ACTIONS, frameAt, neutralDelay, gazeCell, cropRect\} from '\.\/animation\.mjs';\n/;
-assert.match(source, importLine, 'Update the renderer adapter if its imports change');
+const importLine = /^import \{ACTIONS, frameAt, neutralDelay, gazeCell, cropRect\} from '\.\/animation\.mjs';\r?\n/;
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 // Execute the real renderer with its real pure animation functions, replacing
 // only browser/native boundaries and the clock. These are behavioral adapter
 // tests, not native Electron, visual rendering, or Windows desktop validation.
-const runRenderer = new AsyncFunction(
-  'dependencies', 'window', 'document', 'matchMedia', 'fetch', 'Image',
-  'performance', 'setTimeout', 'clearTimeout', 'console',
-  `const {ACTIONS, frameAt, neutralDelay, gazeCell, cropRect} = dependencies;\n${source.replace(importLine, '')}`,
-);
+function compileRenderer(sourceText) {
+  assert.match(sourceText, importLine, 'Update the renderer adapter if its imports change');
+  return new AsyncFunction(
+    'dependencies', 'window', 'document', 'matchMedia', 'fetch', 'Image',
+    'performance', 'setTimeout', 'clearTimeout', 'console',
+    `const {ACTIONS, frameAt, neutralDelay, gazeCell, cropRect} = dependencies;\n${sourceText.replace(importLine, '')}`,
+  );
+}
+const runRenderer = compileRenderer(source);
+
+test('renderer adapter accepts LF and CRLF checkouts while rejecting changed imports', () => {
+  for (const newline of ['\n', '\r\n']) {
+    const checkout = source.replace(/\r?\n/g, newline);
+    assert.equal(typeof compileRenderer(checkout), 'function');
+    assert.throws(() => compileRenderer(checkout.replace('./animation.mjs', './other.mjs')),
+      /Update the renderer adapter if its imports change/);
+  }
+});
 
 function eventTarget(extra = {}) {
   const listeners = new Map();
@@ -34,12 +46,18 @@ async function createRenderer({motion = 'quiet', gaze = false, globalGaze = fals
   let now = 0, serial = 0;
   const timers = new Map(), calls = [], draws = [], errors = [];
   const classes = new Set();
+  const capturedPointers = new Set();
   const canvas = eventTarget({
     width: 192, height: 208, dataset: {},
     classList: {add: (name) => classes.add(name), remove: (name) => classes.delete(name)},
     getContext: () => ({clearRect() {}, drawImage: (...args) => draws.push(args)}),
     getBoundingClientRect: () => ({left: 0, top: 0, width: 192, height: 208}),
-    setPointerCapture(id) { calls.push(['capture', id]); },
+    setPointerCapture(id) { capturedPointers.add(id); calls.push(['capture', id]); },
+    hasPointerCapture(id) { return capturedPointers.has(id); },
+    releasePointerCapture(id) {
+      capturedPointers.delete(id); calls.push(['release', id]);
+      this.emit('lostpointercapture', {pointerId: id});
+    },
   });
   const bodyClasses = new Set();
   const body = {dataset: {}, classList: {toggle(name, value) { if (value) bodyClasses.add(name); else bodyClasses.delete(name); }}};
@@ -228,11 +246,11 @@ test('dragging cancels playback, captures pointer, sends bounded bridge methods,
   assert.ok(r.classes.has('dragging'));
   assert.deepEqual(r.cell(), [0, 0]);
   assert.equal(r.clock.pending(), 0);
-  r.canvas.emit('pointermove', {clientX: 190, clientY: 100});
+  r.canvas.emit('pointermove', {pointerId: 11, clientX: 190, clientY: 100});
   assert.deepEqual(r.calls.at(-1), ['drag']);
   r.action('jump');
   assert.deepEqual(r.cell(), [0, 0]);
-  r.canvas.emit('pointerup'); r.canvas.emit('lostpointercapture');
+  r.canvas.emit('pointerup', {pointerId: 11}); r.canvas.emit('lostpointercapture', {pointerId: 11});
   assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 1);
   assert.equal(r.classes.has('dragging'), false);
   assert.equal(r.clock.nextDelay(), 45000);
@@ -242,7 +260,7 @@ test('pointer cancellation, lost capture, and blur cancel instead of committing 
   for (const event of ['pointercancel', 'lostpointercapture', 'blur']) {
     const r = await createRenderer();
     r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
-    (event === 'blur' ? r.window : r.canvas).emit(event);
+    (event === 'blur' ? r.window : r.canvas).emit(event, {pointerId: 1});
     assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0, event);
     assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1, event);
     assert.equal(r.classes.has('dragging'), false, event);
@@ -337,7 +355,7 @@ test('global gaze rejects invalid payloads and respects reduced motion, hidden s
   r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
   r.gaze({x: 100, y: 0});
   assert.deepEqual(r.cell(), [0, 0]);
-  r.canvas.emit('pointerup');
+  r.canvas.emit('pointerup', {pointerId: 1});
   r.gaze({x: 100, y: 0});
   assert.deepEqual(r.cell(), [9, 4]);
 });
@@ -394,9 +412,10 @@ test('window hidden or dock collapse cancels an in-progress drag instead of fini
     const r = await createRenderer();
     r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
     r.state(update);
-    r.canvas.emit('lostpointercapture');
+    r.canvas.emit('lostpointercapture', {pointerId: 1});
     assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1);
     assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0);
+    assert.equal(r.canvas.hasPointerCapture(1), false);
     assert.equal(r.clock.pending(), 0);
   }
 });
@@ -454,4 +473,75 @@ test('changing gaze preferences preserves a manual action until its normal compl
   assert.equal(r.clock.pending(), 0);
   r.gaze({x: 100, y: 0});
   assert.deepEqual(r.cell(), [9, 4]);
+});
+
+test('unrelated pointers cannot move, finish, or cancel the pointer that owns a drag', async () => {
+  const r = await createRenderer();
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 2});
+  for (const event of ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) {
+    r.canvas.emit(event, {pointerId: 2});
+  }
+  assert.deepEqual(r.calls, [['capture', 1], ['startDrag']]);
+  assert.equal(r.classes.has('dragging'), true);
+  assert.equal(r.canvas.hasPointerCapture(1), true);
+  assert.equal(r.clock.pending(), 0);
+  r.canvas.emit('pointermove', {pointerId: 1});
+  r.canvas.emit('pointerup', {pointerId: 1});
+  assert.deepEqual(r.calls.slice(2), [['drag'], ['release', 1], ['endDrag']]);
+  assert.equal(r.canvas.hasPointerCapture(1), false);
+  assert.equal(r.classes.has('dragging'), false);
+  assert.equal(r.clock.pending(), 1);
+});
+
+test('cancel releases capture and delayed events from the old pointer cannot stop a new drag', async () => {
+  const r = await createRenderer();
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+  r.window.emit('blur');
+  assert.equal(r.canvas.hasPointerCapture(1), false);
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 2});
+  for (const event of ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) {
+    r.canvas.emit(event, {pointerId: 1});
+  }
+  assert.equal(r.classes.has('dragging'), true);
+  assert.equal(r.canvas.hasPointerCapture(2), true);
+  assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1);
+  assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0);
+  r.canvas.emit('pointercancel', {pointerId: 2});
+  assert.equal(r.canvas.hasPointerCapture(2), false);
+  assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 2);
+  assert.equal(r.classes.has('dragging'), false);
+  assert.equal(r.clock.pending(), 1);
+});
+
+test('capture and release failures still cancel once and allow a later drag', async () => {
+  for (const method of ['setPointerCapture', 'releasePointerCapture']) {
+    const r = await createRenderer();
+    const original = r.canvas[method];
+    r.canvas[method] = () => { throw new Error('Native capture unavailable'); };
+    r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+    r.window.emit('blur');
+    assert.equal(r.classes.has('dragging'), false, method);
+    assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1, method);
+    assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0, method);
+    assert.equal(r.clock.pending(), 1, method);
+    r.canvas[method] = original;
+    r.canvas.emit('pointerdown', {button: 0, pointerId: 2});
+    r.canvas.emit('pointerup', {pointerId: 2});
+    assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 1, method);
+    assert.equal(r.classes.has('dragging'), false, method);
+  }
+});
+
+test('opening a context menu releases capture and a later pointer release cannot commit docking', async () => {
+  const r = await createRenderer();
+  r.canvas.emit('pointerdown', {button: 0, pointerId: 1});
+  r.canvas.emit('pointermove', {pointerId: 1});
+  r.document.emit('contextmenu', {preventDefault() { throw new Error('The native menu must remain available'); }});
+  r.canvas.emit('pointerup', {pointerId: 1});
+  assert.equal(r.canvas.hasPointerCapture(1), false);
+  assert.equal(r.classes.has('dragging'), false);
+  assert.equal(r.calls.filter(([name]) => name === 'cancelDrag').length, 1);
+  assert.equal(r.calls.filter(([name]) => name === 'endDrag').length, 0);
+  assert.equal(r.clock.pending(), 1);
 });

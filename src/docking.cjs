@@ -187,4 +187,25 @@ function dockBounds(dock, size, displays) {
   return { expanded, collapsed };
 }
 
-module.exports = { DOCK_THRESHOLD, HIDE_DELAY, dockAt, dockBounds, hitTest, findDisplay };
+// Windows may enforce a larger native minimum than the requested handle. Keep
+// that measured rectangle anchored to the SAME display and edge; never let a
+// right/bottom handle extend into a neighbor or the taskbar.
+function fitDockBounds(dock, requested, measured, displays) {
+  const cleanDock = fields(dock, ['displayId', 'edge']);
+  const desired = rectangle(requested), actual = rectangle(measured);
+  if (!cleanDock || !displayId(cleanDock.displayId) || !EDGES.includes(cleanDock.edge)
+    || !desired || !actual || !Number.isInteger(actual.width) || !Number.isInteger(actual.height)) return null;
+  const candidate = displaysWithAreas(displays).find(display => display.id === cleanDock.displayId);
+  if (!candidate || actual.width > candidate.area.width || actual.height > candidate.area.height) return null;
+  const { area } = candidate;
+  const { width, height } = actual;
+  let x = clamp(Math.round(desired.x + (desired.width - width) / 2), area.x, area.x + area.width - width);
+  let y = clamp(Math.round(desired.y + (desired.height - height) / 2), area.y, area.y + area.height - height);
+  if (cleanDock.edge === 'left') x = area.x;
+  if (cleanDock.edge === 'right') x = area.x + area.width - width;
+  if (cleanDock.edge === 'top') y = area.y;
+  if (cleanDock.edge === 'bottom') y = area.y + area.height - height;
+  return { x, y, width, height };
+}
+
+module.exports = { DOCK_THRESHOLD, HIDE_DELAY, dockAt, dockBounds, fitDockBounds, hitTest, findDisplay };

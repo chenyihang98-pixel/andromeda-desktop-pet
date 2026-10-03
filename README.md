@@ -49,6 +49,7 @@
 ```sh
 npm ci
 npm run verify
+npm run test:ui
 npm start
 npm run build:win
 npm run pack:assets
@@ -56,10 +57,14 @@ npm run pack:assets
 
 `build:win` 生成 Windows x64 ZIP 及 `dist/SHA256SUMS.txt`，不会自动发布。依赖与锁文件固定；ZIP 时间戳等可能随机器不同，不承诺逐字节相同。v0.2.0 仅保留中文和英文的 Electron 内置语言资源，并采用最大 ZIP 压缩；不删除安全组件或许可证，不声称变成轻量原生程序。Windows 图标与版本资源已纳入构建，代码签名仍未启用。
 
-```sh
-# 已安装 Chromium 的开发环境，需要允许本地测试服务和浏览器进程
-CHROMIUM_PATH=/usr/bin/chromium npm run test:ui
+`test:ui` 自动查找本机已安装的 Chrome、Edge 或 Chromium，需要允许本地测试服务和浏览器进程，保持浏览器沙箱开启。也可以显式指定浏览器：
+
+```powershell
+$env:CHROMIUM_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+npm run test:ui
 ```
+
+Linux 可用 `CHROMIUM_PATH=/usr/bin/chromium npm run test:ui`。Electron 44 的运行时会在首次启动时按需下载；也可先运行 `node node_modules/electron/install.js` 下载本项目锁定的版本。
 
 测试脚本的存在不等于实机验证通过；本次准确记录及 Windows 验收清单见 [测试说明](docs/TESTING.md)。
 
