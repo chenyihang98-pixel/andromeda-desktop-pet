@@ -1,0 +1,20 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>星璇 · 陪伴设置</title><link rel="stylesheet" href="settings.css">
+</head><body>
+<header><div><p class="eyebrow">ANDROMEDA · 0.1.0</p><h1>星璇</h1><p class="subtitle">安静地，陪你一会儿</p></div><div class="portrait" aria-hidden="true"></div></header>
+<main>
+<section aria-labelledby="motion-title"><h2 id="motion-title">陪伴节奏</h2>
+<div class="segmented" role="group" aria-label="动作频率">
+<button data-motion="still">静止<span>只在你互动时动作</span></button>
+<button data-motion="quiet">安静<span>45–90 秒轻动一次</span></button>
+<button data-motion="lively">轻快<span>12–20 秒轻动一次</span></button>
+</div><p class="note">默认保持安静站姿，不自动走动，也不循环快速眨眼</p></section>
+<section class="size-section"><label for="scale"><span>显示大小</span><output id="scale-value" for="scale">125%</output></label><input id="scale" type="range" min="0.75" max="2" step="0.05" value="1.25" aria-describedby="scale-help"><p class="note" id="scale-help">拖住星璇即可移动；双击角色可打开此面板</p></section>
+<section class="toggles"><label><span>保持在窗口上方<small>可随时关闭置顶</small></span><input id="alwaysOnTop" type="checkbox" checked></label><label><span>近距离看向鼠标<small>鼠标移入角色区域时，轻轻转头</small></span><input id="gaze" type="checkbox"></label></section>
+<section aria-labelledby="actions-title"><h2 id="actions-title">打个招呼</h2><div class="actions"><button data-action="wave">挥手</button><button data-action="jump">小跳一下</button><button data-action="wait">陪你等候</button><button data-action="review">认真看看</button></div></section>
+<p id="status" role="status" aria-live="polite">设置会自动保存到这台电脑</p>
+<footer><button id="reset">移回屏幕右下角</button><div><button id="hide">暂时隐藏</button><button id="quit" class="danger">退出</button></div></footer>
+<p class="footnote">一款开发中的桌宠 · 离线运行 · 2D 精灵动画</p>
+</main><script type="module" src="settings-ui.mjs"></script></body></html>

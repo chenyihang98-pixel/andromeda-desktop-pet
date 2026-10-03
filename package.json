@@ -1,0 +1,84 @@
+{
+  "name": "andromeda-desktop-pet",
+  "productName": "Andromeda",
+  "version": "0.1.0",
+  "description": "一款开发中的桌宠",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "src/main.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "verify": "npm run check && npm test",
+    "test:ui": "node scripts/ui-test.mjs",
+    "build:win": "npm run verify && electron-builder --win zip --x64 --publish never && node scripts/checksums.mjs",
+    "build:dir": "electron-builder --dir --publish never",
+    "pack:assets": "node scripts/pack-assets.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "playwright-core": "1.58.2",
+    "pngjs": "7.0.0"
+  },
+  "build": {
+    "appId": "local.andromeda.desktop-pet",
+    "productName": "Andromeda",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/andromeda.png",
+      "assets/manifest.json",
+      "assets/icon.png",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "README.md",
+        "to": "README.zh-CN.md"
+      },
+      {
+        "from": "NOTICE.md",
+        "to": "NOTICE.md"
+      },
+      {
+        "from": "docs",
+        "to": "docs"
+      },
+      {
+        "from": "assets/neutral.png",
+        "to": "assets/neutral.png"
+      },
+      {
+        "from": "CHANGELOG.md",
+        "to": "CHANGELOG.md"
+      }
+    ],
+    "win": {
+      "target": [
+        "zip"
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "Andromeda-${version}-windows-${arch}-portable.${ext}"
+    },
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "category": "Utility",
+      "icon": "assets/icon.png"
+    }
+  },
+  "overrides": {
+    "app-builder-lib": {
+      "@electron/get": "5.1.0"
+    }
+  }
+}

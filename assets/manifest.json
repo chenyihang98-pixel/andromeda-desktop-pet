@@ -1,0 +1,25 @@
+{
+  "schema": "andromeda.sprite-atlas/v1",
+  "name": "星璇（Andromeda）桌宠",
+  "description": "一款开发中的桌宠",
+  "artStyle": "3D-styled 2D sprite artwork; not a 3D model",
+  "image": "andromeda.png",
+  "sha256": "8007f0c1c212ec2c950a92af4c8648d6eab66b61e7d998b702e452b3e7b1040d",
+  "spriteVersionNumber": 2,
+  "atlas": {"width": 1536, "height": 2288, "columns": 8, "rows": 11, "cellWidth": 192, "cellHeight": 208, "origin": "top-left", "alpha": true},
+  "neutral": {"row": 0, "column": 0},
+  "animations": {
+    "idle": {"row": 0, "frameCount": 6, "durationsMs": [280,110,110,140,140,320]},
+    "running-right": {"row": 1, "frameCount": 8, "durationsMs": [120,120,120,120,120,120,120,220]},
+    "running-left": {"row": 2, "frameCount": 8, "durationsMs": [120,120,120,120,120,120,120,220]},
+    "waving": {"row": 3, "frameCount": 4, "durationsMs": [140,140,140,280]},
+    "jumping": {"row": 4, "frameCount": 5, "durationsMs": [140,140,140,140,280]},
+    "failed": {"row": 5, "frameCount": 8, "durationsMs": [140,140,140,140,140,140,140,240]},
+    "waiting": {"row": 6, "frameCount": 6, "durationsMs": [150,150,150,150,150,260]},
+    "running": {"row": 7, "frameCount": 6, "durationsMs": [120,120,120,120,120,220], "meaning": "active work / thinking, not locomotion"},
+    "review": {"row": 8, "frameCount": 6, "durationsMs": [150,150,150,150,150,280]}
+  },
+  "lookDirections": {"rows": [9,10], "degreesClockwise": [0,22.5,45,67.5,90,112.5,135,157.5,180,202.5,225,247.5,270,292.5,315,337.5], "zeroDirection": "screen-up", "selection": "pointer-selected pose; not an animation loop"},
+  "desktopPlayback": {"defaultMotion": "quiet", "quietNeutralHoldMs": [45000,90000], "livelyNeutralHoldMs": [12000,20000], "idleSpeedMultiplier": 1.5, "automaticWalking": false, "automaticBlink": false},
+  "rights": "No open-source or redistribution license granted. See NOTICE.md."
+}
