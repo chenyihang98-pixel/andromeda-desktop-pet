@@ -57,6 +57,9 @@
 
 ## 交付范围
 
-Windows 构建使用 `npm run build:win` 和 normal 压缩，生成 `Andromeda-0.3.2-windows-x64-portable.zip`。构建完成后另记源码提交、ZIP/ASAR 哈希和加载验证，不用文档版本号代替产物校验。
+Windows 构建使用 `npm run build:win` 和 normal 压缩，生成 `Andromeda-0.3.2-windows-x64-portable.zip`。ZIP 完整性、43 份 ASAR 代码/素材逐文件校验及打包后 27 项原生加载检查均通过；源码提交、ZIP/ASAR 哈希见 [构建交接](BUILD-0.3.2.md)。
 
 网站 SDK 重新生成清单并同步既有集成分支，更新现有草稿 PR。公开展示仓库以“未发布”记录本轮进度。正式网站主分支和公开 v0.2.0 Release 保留，尚未合并或新建公开发行。
+
+
+本次网站分支预览已部署成功。实际下载远端清单、13 个 SDK 文件与主 JS，字节及 SHA-256 均与本地构建一致；预览提交和 URL 见构建交接。完整六页交互回归在本地生产构建执行，远端核对范围为静态产物。
