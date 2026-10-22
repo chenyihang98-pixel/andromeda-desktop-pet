@@ -33,6 +33,7 @@ try {
     equal(await page.locator('[data-andromeda]').count(), 1); equal(await page.locator('main h1').count(), 1);
     // The game's lazy iframe may focus its own canvas after loading. Return keyboard
     // focus to the host explicitly before checking the host's companion controls.
+    if (path === '/tools/xiaoren-luandou/') await page.waitForFunction(() => document.activeElement?.matches('[data-game-frame] iframe'));
     if (path === '/tools/xiaoren-luandou/' || await page.locator('[data-andromeda] canvas').isHidden()) { await page.locator('main').focus(); await page.waitForTimeout(80); }
     await page.locator('[data-andromeda] canvas').click(); equal(await page.getByRole('searchbox').isVisible(), true);
     equal(await page.getByLabel('本页阅读进度彩蛋', {exact: true}).count(), ['/tools/xingxuan/', '/tools/modelwright/'].includes(path) ? 1 : 0);
@@ -64,6 +65,14 @@ try {
   equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.getByRole('button', {name: '关闭向导面板'}).click(); equal(await avoidsControls(page), true);
   await page.locator('[data-download]').last().scrollIntoViewIfNeeded(); await page.waitForTimeout(150); equal(await avoidsControls(page), true);
+  // A wide service table must scroll within its grid cell rather than enlarge
+  // the phone page and clip the adjacent setup instructions.
+  await page.goto(base + '/tools/modelwright/'); await page.locator('[data-andromeda] canvas[data-asset-state=ready]').waitFor();
+  equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const serviceTable = page.locator('#start .table-wrap'); await serviceTable.scrollIntoViewIfNeeded();
+  const tableWidth = await serviceTable.evaluate(node => ({client: node.clientWidth, scroll: node.scrollWidth}));
+  equal(tableWidth.client < tableWidth.scroll, true);
+  equal(await serviceTable.evaluate(node => { node.scrollLeft = node.scrollWidth; return node.scrollLeft > 0 && node.querySelector('table').getBoundingClientRect().right <= node.getBoundingClientRect().right; }), true);
   // A reduced-motion preview must remain draggable even without an idle render loop.
   await page.setViewportSize({width: 1440, height: 1000}); await page.emulateMedia({reducedMotion: 'reduce'});
   await page.goto(base + '/tools/xingxuan/'); await page.locator('[data-model].is-ready').first().waitFor();

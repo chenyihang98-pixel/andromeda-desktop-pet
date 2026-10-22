@@ -4,7 +4,7 @@
 
 ## 源码与交付位置
 
-集成基于现有星匠网站源码，在网站集成分支进行。公开展示资料不应作为完整站点工程替换；网站自身的源码、提交与发布信息由网站工程管理。
+集成基于现有星匠网站源码，先在独立分支验证；0.3.2 已合入生产主分支并上线，见 [正式部署记录](SITE-DEPLOYMENT-0.3.2.md)。公开展示资料不应作为完整站点工程替换；网站自身的源码、提交与发布信息由网站工程管理。
 
 通用组件源码在本仓库 `web/`，共同逻辑位于 `src/shared/`，使用方法见 [Web SDK 文档](../web/README.md)。网站的 `public/andromeda/` 是由此构建的静态 ESM 包，`sdk-manifest.json` 记录版本、逐文件大小和 SHA-256。网站保留原有 Vite、多页面路由、工具目录、游戏 iframe、Three.js 展示和下载实现。
 
@@ -87,6 +87,8 @@ node web/verify-site.mjs ../site-project/dist
 本地截图在 `qa/web-desktop.png`、`qa/web-mobile.png`、`qa/web-studio.png`、`qa/web-starwright-integrated.png`、`qa/web-starwright-mobile.png`，属于验收产物。该测试没有验证线上的 Cloudflare 配置、登录服务器或真实外部任务接口。
 
 ## 发布边界
+
+当前 0.3.2 已部署正式域名，发布证据与线上验收见 [网站部署记录](SITE-DEPLOYMENT-0.3.2.md)。下文分支预览说明保留为发布流程及历史证据。
 
 网站主分支连接 Cloudflare Pages，推送可能触发自动上线；集成使用网站集成分支，生产发布仍需按网站原有流程处理。上一轮 0.3.1 分支预览已部署成功，并实取 13 个 SDK 文件、清单及网站主 JS 验证与本地构建的字节和哈希一致；这不代表正式域名已发布，也不是远端浏览器全流程验收。更新共享核心后，先重新运行 `sync:companion`、构建和集成验收，避免静态副本与桌宠版本不一致。无需把网站完整源码复制进公开桌宠仓库。
 

@@ -15,7 +15,7 @@
 
 | ID | 状态 | 已有实现与证据 | 未满足部分 / 下一次验收 |
 |---|---|---|---|
-| F01 | 部分完成 | [package.json](../package.json) 版本为 0.3.2；[version-info.mjs](../scripts/version-info.mjs) 从包版本生成能力信息；[build-web.mjs](../scripts/build-web.mjs) 生成 SDK 清单与哈希；站 `content/tools.json` + `scripts/sync-releases.mjs` 是公开发行内容源。 | 本地源码版本与网站真实公开发行 0.2.0 尚不相同；保留真实旧发行信息是正确的，不能先改成不存在的新下载。本地构建与校验以[本轮记录](VALIDATION-0.3.2.md)为准；仍需正式标签/Release，再同步站点并检查公开下载。 |
+| F01 | 部分完成 | [package.json](../package.json) 版本为 0.3.2；[version-info.mjs](../scripts/version-info.mjs) 从包版本生成能力信息；[build-web.mjs](../scripts/build-web.mjs) 生成 SDK 清单与哈希；站 `content/tools.json` + `scripts/sync-releases.mjs` 是公开发行内容源。 | 本地桌宠源码版本与公开桌宠发行 0.2.0 尚不相同；保留真实旧发行信息是正确的，不能先改成不存在的新下载。本地构建与校验以[本轮记录](VALIDATION-0.3.2.md)为准；仍需正式标签/Release，再同步站点并检查公开下载。 |
 | F02 | 部分完成 | [character.mjs](../src/shared/character.mjs) 校验来源、图集、语义映射、锚点、质量档；`resolveAction` 明确返回 fallback；桌面与 Web 均使用。角色包单元测试通过。 | 经典图集有统一包装；Studio 仍是独立 4×3 静态映射，尚未纳入完整角色包/逐姿态锚点与质量档；默认锚点是近似值。需实际导入一个完整包并双端核对。 |
 | F03 | 已完成 | [共享核心](../src/shared/README.md) 无 Electron/DOM 依赖；[companion-host.cjs](../src/companion-host.cjs) 连接桌面持久化；[andromeda.mjs](../web/andromeda.mjs) 连接网页生命周期；站 `src/guide/sdk.ts` 直接使用同步 SDK。 | 基础双宿主已实现；网站保持匿名公开上下文，不代表账号云服务已实现。共享核心测试、SDK 浏览器及真实站本地生产构建验证支持此结论。 |
 | F04 | 部分完成 | [behavior.mjs](../src/shared/behavior.mjs) 有优先级、冷却、抢占、剩余时长恢复、隐藏/拖动暂停、过期任务替换；[pet-enhancements.mjs](../src/pet-enhancements.mjs) 与 Web 已接事件队列，桌面手动动作新增 priority=80 的 `manual` 入口。 | 经典待机计时触发也进入低优先级调度，活动事件阻止另起待机；共享调度器通过测试不等于所有入口组合已验证。需真实画面测“拖动收到任务→松手→只播放一次”和手动动作后恢复任务。 |
@@ -119,5 +119,7 @@
 可继续直接制作：Studio逐帧动画与边缘修整、姿态锚点/多档导出、独立疑惑与温和失落母图、角色包事件模拟器、多宠与小窝。当前完成范围以各项表格为准；不能因为基础闭环可用，就忽略原清单里尚未交付的扩展体验。
 
 确需外部条件的部分：真实登录与服务端任务授权/云存储（W07/X01）；站内AI代理及实际服务配置（C06及C01/C04/C05实链路）；签名证书和发布升级回退流程（X04）；macOS/Linux及多屏/DPI/移动设备（F08/X07/W05扩展验收）；可驱动Live2D或3D模型的制作、绑定、表情和授权（A09）。美术连续帧属于仍需完成的制作工作，不能泛称外部阻碍来掩盖未完成。
+
+站宠 0.3.2 已正式部署，见 [上线记录](SITE-DEPLOYMENT-0.3.2.md)；这不代表桌宠 0.3.2 已公开发行。
 
 本轮最终验证入口：[0.3.2验证记录](VALIDATION-0.3.2.md)和[资源/代码审查](PERFORMANCE-0.3.1.md)。历史行中的测试数只对应当时子集，不是最终总数。资源优化与缺陷修复不改变 20 项基础闭环完成、28 项部分完成、4 项待外部条件、2 项未实现的范围统计。

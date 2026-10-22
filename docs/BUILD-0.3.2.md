@@ -17,6 +17,9 @@
 
 网站集成提交：`bccf74a77fe17c591083304a7a3d4caa3af4fb8a`。13 个 SDK 文件与标准化 LF 的 Web 构建字节、大小及 SHA-256 一致。Cloudflare 报告该提交预览部署成功；另从 [此次分支预览](https://a9b33e53.xingxuan-platform.pages.dev) 实际下载清单、13 份 SDK 和网站主脚本，与本地构建逐一比对通过。主脚本 `main-BH1V5dh2.js` 为 24,581 字节。
 
-网站变更保留在既有集成分支和草稿 PR，生产主分支未合并；公开展示仓库以“未发布”同步进度。远端证据覆盖静态产物一致性，六页浏览器回归在本地生产构建执行。原始记录：`qa/asar-verification-0.3.2.json`、`qa/native-asar-smoke.json`、`qa/zip-0.3.2.log`、`qa/preview-0.3.2.json`。
+构建当时，网站变更保留在既有集成分支和草稿 PR，生产主分支未合并；公开展示仓库以“未发布”同步进度。远端证据覆盖静态产物一致性，六页浏览器回归在本地生产构建执行。原始记录：`qa/asar-verification-0.3.2.json`、`qa/native-asar-smoke.json`、`qa/zip-0.3.2.log`、`qa/preview-0.3.2.json`。
 
 13 项已确认缺陷已修复，54 项功能路线图仍保留原完成范围；实际混合 DPI、多屏热插拔和手机软键盘等限制见验证记录。
+
+
+后续状态：站宠 0.3.2 已正式上线，见 [网站部署记录](SITE-DEPLOYMENT-0.3.2.md)。此补记不改变上面的 ZIP 和源码身份。
