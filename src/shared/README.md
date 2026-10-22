@@ -17,6 +17,8 @@ const savedAgain = engine.serialize();
 
 `snapshot()` returns a detached JSON-safe state. `serialize()` also captures in-flight focus time without emitting or discarding events. Only version 1 archives with a matching `scope` restore. Invalid records are discarded or reset. A running focus/break session restores **paused**, so closed-app time gives neither rewards nor penalties. The host should also pause focus when appropriate on system suspend and persist when state changes.
 
+`publicSnapshot()` copies only public rendering fields, without visiting private collections. `nextWakeAt()` returns the earliest domain deadline or null; hosts reschedule after commands, ticks and resume. `revision()` identifies durable domain changes, including muted reminders that emit no animation. Running focus still needs persistence checkpoints; the desktop keeps a 15-second checkpoint and renders the visible countdown locally.
+
 All commands are synchronous and reject unknown fields/types. Rejected commands leave domain state unchanged. Results have `{state, events}` and export commands additionally provide `data`.
 
 | Command | Fields |
@@ -54,7 +56,7 @@ Focus rewards completed whole minutes (2 XP per minute, capped at 120 per sessio
 
 ## Behavior scheduler
 
-`createBehaviorScheduler({now, maxQueue=32, cooldowns={}})` returns `enqueue(event)`, `tick()`, `setContext(patch)`, `complete(id)`, `clear({kind}?)`, and `snapshot()`.
+`createBehaviorScheduler({now, maxQueue=32, cooldowns={}})` returns `enqueue(event)`, `tick()`, `setContext(patch)`, `complete(id)`, `clear({kind}?)`, `snapshot()`, `isActive()` and `nextDelay()`. The last two read scalars without copying the queue. `nextDelay()` returns the next action/cooldown deadline in milliseconds, or null when empty/suppressed; reschedule it after queue or context changes instead of polling.
 
 Context accepts only `hidden`, `paused`, `dragging`, `reducedMotion` booleans. Hidden/paused/dragging suspends the active action and keeps queued actions without waking the host. Higher priority events preempt a resumable action; after the interrupt it continues with remaining time. A newer event for the same task and event-family replaces obsolete feedback. Per-action cooldowns prevent repeated gestures; reduced motion returns a static pose for at most 900 ms.
 
@@ -65,6 +67,8 @@ Snapshot: `{active, queue, paused, context}`. Active includes the event plus `re
 `characterPackFromAtlas(manifest, metadata?)` wraps the current `andromeda.sprite-atlas/v1` data as a validated `andromeda.character/v1` package. It does not edit or enlarge the existing images. `validateCharacterPack(pack)` validates bounded geometry, frame durations, source/rights metadata, semantic action mappings, normalized ground/body/face/dialogue anchors, quality tiers and local PNG/WebP paths. Unknown fields, traversal/external URLs and script fields are rejected. Actual file hashes and decoded dimensions still need host-side checks.
 
 `resolveAction(pack, semantic, {reducedMotion})` returns `{semantic, animation, fallback, static, row, column, frameCount, durationsMs, anchor}`. `fallback:true` explicitly identifies a substitute: the existing atlas does not suddenly acquire sleep, petting or pointing animations. If no suitable animation exists, resolution returns the neutral pose. `resolveSemanticAction(pack, semantic)` returns only the animation name or null.
+
+For repeated playback, `createActionResolver(pack)` validates and captures a private normalized copy once, then returns `(semantic, {reducedMotion}?) => clip`. Inputs and returned clips cannot mutate that private copy. The general `resolveAction` entry point still validates arbitrary input every time.
 
 Default anchors are documented approximations for the existing artwork, not an art-production verification. New high-resolution views, mouth shapes, rigging, audio and animation assets are separate deliverables.
 

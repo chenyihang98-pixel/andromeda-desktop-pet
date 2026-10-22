@@ -5,9 +5,9 @@ const fs = require('node:fs/promises');
 const { mkdirSync, existsSync } = require('node:fs');
 const path = require('node:path');
 const {
-  createSettingsStore, validateSettingsPatch, petSize, clampPosition, defaultPosition,
+  createSettingsStore, validateSettingsPatch, petSize, clampPosition,
 } = require('./settings.cjs');
-const { dockAt, dockBounds, hitTest, HIDE_DELAY } = require('./docking.cjs');
+const { dockAt, dockBounds, findDisplay, hitTest, HIDE_DELAY } = require('./docking.cjs');
 const { applyDockWindowBounds } = require('./dock-window.cjs');
 const { createFullscreenMonitor } = require('./fullscreen-monitor.cjs');
 const { createCompanionHost } = require('./companion-host.cjs');
@@ -15,6 +15,7 @@ const {createMotionState, setMotionMode, syncMotionBounds, throwMotion, stepMoti
 const {createShortcutStore} = require('./services/shortcuts.cjs');
 const {SCHEME:DEEP_LINK_SCHEME,parseDeepLink}=require('./deep-link.cjs');
 const {createCharacterStore}=require('./services/character-store.cjs');
+const {assertPayloadBudget}=require('./ipc-budget.cjs');
 
 const RELEASES_URL = 'https://github.com/chenyihang98-pixel/andromeda-desktop-pet/releases';
 const VERSION = require('../package.json').version;
@@ -81,6 +82,7 @@ let settingsBeforePause = false;
 let fullscreenMonitor = null;
 let fullscreenSnapshot = null;
 let fullscreenError = null;
+let lastPublicState = null;
 const pauses = new Set();
 function validateCharacterImage(value){
   const decoded=nativeImage.createFromBuffer(value.image),size=decoded.getSize();
@@ -150,12 +152,34 @@ function disableFullscreenAutoHide() {
   preferences.settings.autoHideFullscreen = false;
   stopFullscreenMonitor();
 }
+
+function fittedPetBounds(position, { cursor, display } = {}) {
+  const nominal = petSize(preferences.settings.scale);
+  const target = display || (position && findDisplay({ ...nominal, ...position }, screen.getAllDisplays(), cursor)) || screen.getPrimaryDisplay();
+  const size = petSize(preferences.settings.scale, target);
+  return { ...clampPosition(position, size, [target], target), ...size };
+}
+
+function applyFreePetBounds(next, cursor) {
+  const current = petWindow.getBounds();
+  if (current.width !== next.width || current.height !== next.height) petWindow.setBounds(next);
+  else if (current.x !== next.x || current.y !== next.y) petWindow.setPosition(next.x, next.y);
+  // Some platforms impose a native minimum. Clamp the measured rectangle on
+  // the intended display, even if that minimum exceeds an unusual work area.
+  const measured = petWindow.getBounds();
+  if (measured.width !== next.width || measured.height !== next.height) {
+    const target = findDisplay(next, screen.getAllDisplays(), cursor) || screen.getPrimaryDisplay();
+    const position = clampPosition(measured, measured, [target], target);
+    if (measured.x !== position.x || measured.y !== position.y) petWindow.setPosition(position.x, position.y);
+  }
+}
+
 function normalBounds() {
   if (!isAlive(petWindow)) return null;
   if (dock) {
     const layout = dockBounds(dock, petSize(preferences.settings.scale), screen.getAllDisplays());
     if (layout) return layout.expanded;
-    return { ...preferences.position, ...petSize(preferences.settings.scale) };
+    return fittedPetBounds(preferences.position);
   }
   return petWindow.getBounds();
 }
@@ -187,12 +211,18 @@ function updateMovement() {
   const state = companionHost?.publicState(), mode = state?.preferences?.movement || 'off';
   const needed = mode !== 'off' && !quitting && !paused() && !dock && !dragSession && !clickThroughActive
     && !state?.focusing && !state?.preferences?.reducedMotion && isAlive(petWindow) && petWindow.isVisible();
-  if (!needed) { if (movementTimer) clearInterval(movementTimer); movementTimer = null; movementState = null; return; }
+  if (!needed) {if (movementTimer) clearTimeout(movementTimer);movementTimer = null;movementState = null;return;}
   if (movementTimer) return;
-  movementState = createMotionState(petWindow.getBounds(), {mode}); movementTime = Date.now();
-  movementTimer = setInterval(() => {
-    if (!isAlive(petWindow)) {clearInterval(movementTimer);movementTimer = null;return;}
+  if (!movementState) movementState = createMotionState(petWindow.getBounds(), {mode});
+  else if (movementState.mode !== mode) movementState = setMotionMode(movementState, mode);
+  if (mode === 'toss' && !movementState.active) return;
+  movementTime = Date.now();movementTimer = setTimeout(pollMovement, 33);
+}
+function pollMovement() {
+    movementTimer = null;
+    if (!isAlive(petWindow) || !movementState) return;
     const current = companionHost.publicState(), nextMode = current.preferences.movement;
+    if (quitting || paused() || dock || dragSession || clickThroughActive || current.focusing || current.preferences.reducedMotion || !petWindow.isVisible() || nextMode === 'off') {updateMovement();return;}
     if (nextMode !== movementState.mode) movementState = setMotionMode(movementState,nextMode);
     // Native dragging, scale changes and display changes are authoritative.
     const actual = petWindow.getBounds();
@@ -202,7 +232,7 @@ function updateMovement() {
     movementState=result.state;movementTime=now;
     if(result.moved)petWindow.setPosition(result.bounds.x,result.bounds.y);
     if(result.action!=='idle' && now-movementActionAt>2000) {movementActionAt=now;emitCompanionEvent({id:'move-'+now,kind:'motion',action:result.action,text:'',priority:15});}
-  },33);
+    if (movementState.mode !== 'toss' || movementState.active) movementTimer = setTimeout(pollMovement, movementState.mode === 'follow' && !result.moved ? 100 : 33);
 }
 
 function setDockCollapsed(collapsed) {
@@ -282,6 +312,7 @@ function pauseDesktop(reason) {
 function resumeDesktop(reason) {
   if (quitting) return;
   pauses.delete(reason);
+  if (reason === 'locked' || reason === 'suspended') void companionHost?.refresh().catch(() => {});
   if (paused()) { if (reason !== 'fullscreen') updateFullscreenMonitor(); return; }
   clampPetPosition();
   if (!userHidden && isAlive(petWindow)) petWindow.showInactive();
@@ -295,8 +326,12 @@ function isAlive(window) { return window && !window.isDestroyed(); }
 function hasTray() { return tray !== null && !tray.isDestroyed(); }
 
 function state() {
+  const requestedSize = petSize(preferences.settings.scale);
+  const bounds = normalBounds();
+  const displayedSize = bounds ? { width: bounds.width, height: bounds.height } : requestedSize;
   return {
     settings: { ...preferences.settings },
+    geometry: { requestedSize, displayedSize, fittedToWorkArea: displayedSize.width < requestedSize.width || displayedSize.height < requestedSize.height },
     visible: Boolean(isAlive(petWindow) && petWindow.isVisible()),
     trayAvailable: hasTray(),
     persistenceError,
@@ -347,7 +382,7 @@ function rememberPosition(immediate = false) {
   }
 }
 
-function clampPetPosition() {
+function clampPetPosition(cursor) {
   if (!isAlive(petWindow)) return;
   if (dock) {
     if (applyDockWindowBounds(petWindow, dock, petSize(preferences.settings.scale), screen.getAllDisplays())) {
@@ -355,31 +390,43 @@ function clampPetPosition() {
     }
     const position = preferences.position;
     dock = null;
-    const size = petSize(preferences.settings.scale);
-    petWindow.setBounds({ ...clampPosition(position, size, screen.getAllDisplays(), screen.getPrimaryDisplay()), ...size });
+    applyFreePetBounds(fittedPetBounds(position, { cursor }), cursor);
   } else {
     const bounds = petWindow.getBounds();
-    // A dock may have shrunk to fit a tiny work area. Free windows must use
-    // the configured scale again instead of retaining those temporary bounds.
-    const size = petSize(preferences.settings.scale);
-    const position = clampPosition(bounds, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
-    if (bounds.width !== size.width || bounds.height !== size.height) petWindow.setBounds({ ...position, ...size });
-    else if (bounds.x !== position.x || bounds.y !== position.y) petWindow.setPosition(position.x, position.y);
+    applyFreePetBounds(fittedPetBounds(bounds, { cursor }), cursor);
   }
   rememberPosition(true);
   applyClickThrough(); updateDesktopTimer(); publishState();
 }
 
+function moveDraggedPet(cursor) {
+  const { origin, cursor: initial } = dragSession;
+  const translated = { ...origin, x: origin.x + cursor.x - initial.x, y: origin.y + cursor.y - initial.y };
+  const target = findDisplay(translated, screen.getAllDisplays(), cursor) || screen.getPrimaryDisplay();
+  const size = petSize(preferences.settings.scale, target);
+  // Keep the grabbed point under the pointer when a new monitor requires a
+  // smaller temporary size. Restore the requested size on a larger monitor.
+  const next = {
+    x: Math.round(cursor.x - (initial.x - origin.x) * size.width / origin.width),
+    y: Math.round(cursor.y - (initial.y - origin.y) * size.height / origin.height),
+    ...size,
+  };
+  const bounds = petWindow.getBounds();
+  if (bounds.width !== next.width || bounds.height !== next.height) petWindow.setBounds(next);
+  else petWindow.setPosition(next.x, next.y);
+}
+
 function stopDrag(shouldDock = false) {
   if (!dragSession) return;
   let moved = dragSession.moved;
+  let cursor;
   if (shouldDock && isAlive(petWindow) && !paused()) {
-    const cursor = screen.getCursorScreenPoint();
+    cursor = screen.getCursorScreenPoint();
     const dx = cursor.x - dragSession.cursor.x, dy = cursor.y - dragSession.cursor.y;
     moved ||= Math.hypot(dx, dy) >= 5;
     if (moved) {
       dock = null;
-      petWindow.setPosition(Math.round(dragSession.origin.x + dx), Math.round(dragSession.origin.y + dy));
+      moveDraggedPet(cursor);
     }
   }
   clearTimeout(dragSession.expiry);
@@ -393,7 +440,7 @@ function stopDrag(shouldDock = false) {
       if (dock) dock.waitForLeave = hitTest(screen.getCursorScreenPoint(), petWindow.getBounds());
     }
   }
-  clampPetPosition();
+  clampPetPosition(moved ? cursor : undefined);
   applyClickThrough(); updateDesktopTimer(); publishState();
 }
 
@@ -442,17 +489,19 @@ function applySettings(patch) {
   if (Object.hasOwn(clean, 'autoHideFullscreen')) fullscreenError = null;
   if (dock && !preferences.settings.edgeDock) undockPet();
   if (isAlive(petWindow)) {
-    const size = petSize(preferences.settings.scale);
     if (dock) {
       setDockCollapsed(dock.collapsed);
     } else {
       // Keep the bottom-center fixed when scaling, then ensure visibility.
-      const position = clampPosition({
+      const display = findDisplay(old, screen.getAllDisplays()) || screen.getPrimaryDisplay();
+      const size = petSize(preferences.settings.scale, display);
+      const bounds = fittedPetBounds({
         x: old.x + (old.width - size.width) / 2,
         y: old.y + old.height - size.height,
-      }, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
-      petWindow.setBounds({ ...position, ...size });
-      preferences.position = position;
+      }, { display });
+      applyFreePetBounds(bounds);
+      const actual = petWindow.getBounds();
+      preferences.position = { x: actual.x, y: actual.y };
     }
     petWindow.setAlwaysOnTop(preferences.settings.alwaysOnTop);
   }
@@ -467,8 +516,7 @@ function resetPosition() {
   stopDrag();
   undockPet();
   if (isAlive(petWindow)) {
-    const position = defaultPosition(petSize(preferences.settings.scale), screen.getPrimaryDisplay());
-    petWindow.setPosition(position.x, position.y);
+    applyFreePetBounds(fittedPetBounds(null, { display: screen.getPrimaryDisplay() }));
     rememberPosition(true);
     restorePet();
   }
@@ -502,6 +550,10 @@ function showCompanion() {
     backgroundColor: '#101624', show: false, webPreferences: webPreferences()});
   secureWindow(companionWindow);
   companionWindow.once('ready-to-show', () => { if (!quitting && !paused() && isAlive(companionWindow)) companionWindow.show(); });
+  const current = companionWindow;
+  companionWindow.on('show', () => {void companionHost?.state().then(value => {
+    if (!quitting && isAlive(current) && current === companionWindow && current.isVisible()) current.webContents.send('andromeda:companion', value);
+  }).catch(() => {});});
   companionWindow.on('closed', () => { companionWindow = null; voiceAllowedUntil = 0; companionHost?.cancelAssistant(); if(isAlive(petWindow))petWindow.webContents.send('andromeda:rhythm',0); });
   loadWindow(companionWindow, COMPANION_URL);
 }
@@ -600,7 +652,7 @@ function registerIPC() {
       if(channel==='andromeda:rhythm'&&payload===0&&(quitting||!isAlive(companionWindow)||pauses.has('locked')||pauses.has('suspended')))return false;
       if (!trustedSender(event) || event.sender !== companionWindow?.webContents) throw new Error('请从陪伴空间操作');
       if (quitting || pauses.has('locked') || pauses.has('suspended')) throw new Error('当前会话已暂停');
-      if (payload !== undefined && JSON.stringify(payload).length > 12_000_000) throw new TypeError('内容过大');
+      if (payload !== undefined) assertPayloadBudget(payload);
       return callback(payload);
     });
   }
@@ -621,7 +673,7 @@ function registerIPC() {
   privateHandle('andromeda:toss', () => {
     updateMovement();
     if (!movementState || movementState.mode !== 'toss') throw new Error('请先开启轻抛模式，并将星璇移出边缘收纳');
-    movementState = throwMotion(movementState,{velocityX:180,velocityY:-320}); return true;
+    movementState = throwMotion(movementState,{velocityX:180,velocityY:-320});updateMovement();return true;
   });
   privateHandle('andromeda:rhythm', level => {
     if (!Number.isFinite(level) || level < 0 || level > 1) throw new TypeError('无效的节奏信号');
@@ -700,7 +752,7 @@ function registerIPC() {
     const bounds = petWindow.getBounds();
     if (!hitTest(cursor, bounds)) return;
     if (dock) dock.hideAt = null;
-    dragSession = { cursor, origin: { x: bounds.x, y: bounds.y }, moved: false, lastUpdate: 0, expiry: setTimeout(stopDrag, 30_000) };
+    dragSession = { cursor, origin: bounds, moved: false, lastUpdate: 0, expiry: setTimeout(stopDrag, 30_000) };
   });
   dragHandler('andromeda:drag', () => {
     if (!dragSession || !petWindow.isVisible() || paused()) return;
@@ -713,7 +765,7 @@ function registerIPC() {
     if (!dragSession.moved && Math.hypot(dx, dy) < 5) return;
     dragSession.moved = true;
     if (dock) { dock = null; publishState(); }
-    petWindow.setPosition(Math.round(dragSession.origin.x + dx), Math.round(dragSession.origin.y + dy));
+    moveDraggedPet(cursor);
   });
   dragHandler('andromeda:end-drag', () => stopDrag(true));
   dragHandler('andromeda:cancel-drag', () => stopDrag(false));
@@ -813,10 +865,9 @@ function loadWindow(window, url) {
 }
 
 function createPetWindow() {
-  const size = petSize(preferences.settings.scale);
-  const position = clampPosition(preferences.position, size, screen.getAllDisplays(), screen.getPrimaryDisplay());
+  const bounds = fittedPetBounds(preferences.position);
   petWindow = new BrowserWindow({
-    ...size, ...position,
+    ...bounds,
     title: APP_NAME,
     icon: ICON_PATH,
     transparent: true,
@@ -842,6 +893,7 @@ function createPetWindow() {
   });
   petWindow.once('ready-to-show', () => {
     if (quitting || !isAlive(petWindow)) return;
+    if (!dock) applyFreePetBounds(fittedPetBounds(petWindow.getBounds()));
     if (!paused() && !userHidden) petWindow.show(); // Hidden/docked/clickthrough state does not strand a restart.
     applyClickThrough(); updateDesktopTimer(); publishState();
   });
@@ -912,7 +964,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     companionHost?.stop();
-    clearInterval(movementTimer); movementTimer = null;
+    clearTimeout(movementTimer); movementTimer = null;
     stopDrag();
     clearTimeout(positionSaveTimer);
     clearInterval(desktopTimer); desktopTimer = null;
@@ -947,9 +999,20 @@ if (!app.requestSingleInstanceLock()) {
     companionHost = createCompanionHost({directory: app.getPath('userData'), safeStorage, openLink,
       emit: emitCompanionEvent,
       publish(value) {
-        if (isAlive(companionWindow)) companionWindow.webContents.send('andromeda:companion', value);
-        if (value.companion && isAlive(petWindow)) petWindow.webContents.send('andromeda:public', companionHost?.publicState());
-        if (value.companion) updateMovement();
+        if (isAlive(companionWindow) && companionWindow.isVisible()) companionWindow.webContents.send('andromeda:companion', value);
+        if (value.companion) {
+          const current = companionHost?.publicState();
+          // Compare only the tiny public projection, never serialize private collections.
+          const changed = !lastPublicState || current.mood !== lastPublicState.mood || current.focusing !== lastPublicState.focusing
+            || current.level !== lastPublicState.level || current.routine.period !== lastPublicState.routine.period
+            || current.routine.season !== lastPublicState.routine.season
+            || Object.keys(current.preferences).some(key => current.preferences[key] !== lastPublicState.preferences[key]);
+          if (changed) {
+            lastPublicState = current;
+            if (isAlive(petWindow) && petWindow.isVisible() && !paused()) petWindow.webContents.send('andromeda:public', current);
+            updateMovement();
+          }
+        }
       },
       capture: async ({signal} = {}) => {
         if (signal?.aborted || quitting || pauses.has('locked') || pauses.has('suspended')) throw new Error('截图已取消');

@@ -128,3 +128,15 @@ test('supplied metadata is cloned and legal maximum cell sizes are displayed wit
   assert.deepEqual(env.crop(), [0, 0, 4096, 4096]);assert.deepEqual(env.canvases[1].ctx.last.slice(5), [50, 0, 100, 100]);
   renderer.destroy();
 });
+
+test('same gaze cell and repeated preferences do not redraw; canvas resize invalidates cache', async () => {
+  const env=environment(),renderer=env.create();env.load();await renderer.ready;
+  renderer.gaze(100,-10);const painted=env.canvas.ctx.calls.length;
+  for(let i=0;i<20;i++){renderer.gaze(100+i,-10);renderer.setReducedMotion(false);}
+  assert.equal(env.canvas.ctx.calls.length,painted);
+  env.canvas.width=200;renderer.gaze(100,0);assert.ok(env.canvas.ctx.calls.length>painted);
+  renderer.draw('greet');renderer.setReducedMotion(true);const reducedPaints=env.canvas.ctx.calls.length;
+  for(let i=0;i<20;i++)renderer.setReducedMotion(true);
+  assert.equal(env.canvas.ctx.calls.length,reducedPaints);assert.equal(env.timers.size,0);
+  renderer.destroy();
+});

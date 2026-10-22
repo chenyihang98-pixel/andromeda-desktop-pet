@@ -1,5 +1,6 @@
 /** Platform-neutral companion domain. No timers, network, DOM or privileged APIs. */
 export const COMPANION_VERSION = 1;
+export const MAX_COMPANION_BYTES = 4 * 1024 * 1024;
 export const COMPANION_ROLES = Object.freeze(['owner', 'visitor', 'admin']);
 export const DEFAULT_PREFERENCES = Object.freeze({ motion: 'quiet', sound: false, reducedMotion: false,
   remindersMuted: false, routine: true, focusMinutes: 25, breakMinutes: 5,
@@ -27,7 +28,8 @@ function keys(value, allowed) {
   return value;
 }
 function string(value, max = LIMITS.text, empty = false) {
-  if (typeof value !== 'string' || value.length > max || (!empty && !value.trim()) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(value)) {
+  if (typeof value !== 'string' || value.length > max || (!empty && !value.trim())
+    || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\uD800-\uDFFF]/u.test(value)) {
     throw new TypeError('文本为空、过长或包含控制字符');
   }
   return value.trim();
@@ -168,6 +170,7 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
   const timeNow = () => timestamp(now());
   let state = restore(saved, role, timeNow());
   let emitted = [];
+  let durableRevision = 0;
   const issuedIds = new Set();
   const nextId = prefix => {
     const occupied = new Set([state.focus.id, ...state.todos.map(item => item.id), ...state.memories.map(item => item.id),
@@ -192,6 +195,7 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
     return entry;
   }
   function notify(kind, action, text, priority, taskId, time) {
+    durableRevision++;
     text = text.slice(0, LIMITS.text);
     const item = { id: nextId('item'), text, ...(taskId ? { taskId } : {}) };
     const current = state.notifications.find(entry => entry.kind === kind && entry.action === action);
@@ -280,9 +284,8 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
     if (command.type === 'preferences.export' || command.type === 'memory.export') {
       return { state: clone(state), events: [], data: command.type === 'preferences.export' ? exportPreferences(state) : exportMemories(state) };
     }
-    const previous = clone(state);
+    const previous = clone(state), previousRevision = durableRevision;
     emitted = [];
-    let data;
     try {
       const time = timeNow();
       advance(time);
@@ -299,7 +302,6 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
           keys(command.data, ['schema', 'preferences']);
           if (command.data.schema !== 'andromeda.preferences/v1') throw new TypeError('不支持的偏好格式');
           Object.assign(state.preferences, validatePreferencePatch(command.data.preferences)); break;
-        case 'preferences.export': data = exportPreferences(state); break;
         case 'focus.start': {
           if (['running', 'paused', 'break'].includes(focus.status)) throw new Error('请先结束或取消当前计时');
           const duration = number(command.durationMinutes ?? state.preferences.focusMinutes, 1, 240, true) * MINUTE;
@@ -366,7 +368,6 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
         }
         case 'memory.forget': { const memoryId = identifier(command.id); state.memories = state.memories.filter(item => item.id !== memoryId); break; }
         case 'memory.clear': state.memories = []; break;
-        case 'memory.export': data = exportMemories(state); break;
         case 'notification.ack': { const notificationId = identifier(command.id); state.notifications = state.notifications.filter(item => item.id !== notificationId); break; }
         case 'notification.clear': state.notifications = []; break;
         case 'reminders.mute': state.preferences.remindersMuted = boolean(command.muted); break;
@@ -396,8 +397,9 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
       }
       // New reminders due immediately are detected on this dispatch, without waiting for a host interval.
       advance(time);
-      return { state: clone(state), events: clone(emitted), ...(data ? { data: clone(data) } : {}) };
-    } catch (error) { state = previous; emitted = []; throw error; }
+      durableRevision++;
+      return { state: clone(state), events: clone(emitted) };
+    } catch (error) { state = previous; durableRevision = previousRevision; emitted = []; throw error; }
   }
   function tick() { emitted = []; advance(timeNow()); return { state: clone(state), events: clone(emitted) }; }
   function serialize() {
@@ -410,5 +412,30 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
     }
     return result;
   }
-  return Object.freeze({ dispatch, tick, snapshot: () => clone(state), serialize });
+  /** Small, detached rendering projection. Never traverses private lists or conversations. */
+  function publicSnapshot() {
+    return {preferences: {...state.preferences}, mood: state.mood.value, routine: {...state.routine},
+      focusing: state.focus.status === 'running', level: state.progression.level};
+  }
+  /** Earliest domain deadline; hosts own timers and may add persistence checkpoints. */
+  function nextWakeAt() {
+    const time = timeNow(), candidates = [], focus = state.focus;
+    if (focus.status === 'running' || focus.status === 'break') candidates.push(focus.updatedAt + focus.remainingMs);
+    for (const todo of state.todos) if (todo.status === 'open' && todo.dueAt !== null && todo.remindedAt !== todo.dueAt) candidates.push(todo.dueAt);
+    if (state.mood.value !== 0) candidates.push(state.mood.updatedAt + Math.min(30_000, Math.ceil(Math.abs(state.mood.value) * 30 * MINUTE)));
+    if (state.preferences.routine) {
+      const current = routineAt(time);
+      if (current.period !== state.routine.period || current.season !== state.routine.season) candidates.push(time);
+      const offset = timezoneOffsetMinutes * MINUTE, day = 24 * 60 * MINUTE;
+      const dayStart = Math.floor((time + offset) / day) * day - offset;
+      // Midnight also updates season without assuming that every day is a period boundary.
+      for (const hour of [6, 12, 18, 22, 24]) {
+        const boundary = dayStart + hour * 60 * MINUTE;
+        if (boundary > time) {candidates.push(boundary);break;}
+      }
+    }
+    return candidates.length ? Math.max(time, Math.min(...candidates)) : null;
+  }
+  return Object.freeze({ dispatch, tick, snapshot: () => clone(state), serialize, publicSnapshot, nextWakeAt,
+    revision: () => durableRevision });
 }

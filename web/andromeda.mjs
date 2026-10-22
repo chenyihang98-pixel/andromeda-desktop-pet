@@ -1,5 +1,5 @@
 import {createCompanionEngine} from '../src/shared/companion.mjs';
-import {resolveAction} from '../src/shared/character.mjs';
+import {createActionResolver} from '../src/shared/character.mjs';
 import {createBehaviorScheduler} from '../src/shared/behavior.mjs';
 import {frameAt, cropRect, neutralDelay} from '../src/animation.mjs';
 import {SITE_CONTENT, searchSiteContent, pageContent} from '../src/shared/site-content.mjs';
@@ -20,7 +20,9 @@ export function mountAndromeda(options = {}) {
   let destroyed = false, engine = createCompanionEngine({}, {role: 'visitor', timezoneOffsetMinutes: -new Date().getTimezoneOffset()}), sessionUser = null;
   const content = options.content || SITE_CONTENT;
   const scheduler = createBehaviorScheduler({maxQueue: 12});
-  let manifest, pack, atlas, studioImage, studioPromise, posterLoaded = false, animationTimer, idleTimer, bubbleTimer, dockTimer;
+  let manifest, pack, resolveAction, atlas, studioImage, studioPromise, posterLoaded = false, animationTimer, idleTimer, bubbleTimer, dockTimer;
+  let drawnFrame = null, gazeBounds = null;
+  const downloadUrls = new Set();
   let action = null, drag = null, suppressClick = false, panelOpen = false, autoAvoid = false, tourIndex = -1, gameActive = false;
   let audioContext = null, lastNotice = 0, schedulerTimer, shownEvent = null;
   let typingCount = 0, typingActive = false, typingIdleTimer, typingPaintTimer;
@@ -84,9 +86,11 @@ export function mountAndromeda(options = {}) {
     restore.dataset.typing = String(preferences.inputFeedback && typingActive && autoAvoid);
     place();
   }
-  function stopTyping() { cancel(typingIdleTimer); cancel(typingPaintTimer); typingIdleTimer = typingPaintTimer = undefined; typingActive = false; paintTyping(); }
+  function stopTyping() { const wasActive = typingActive; cancel(typingIdleTimer); cancel(typingPaintTimer); typingIdleTimer = typingPaintTimer = undefined; typingActive = false; if (wasActive) paintTyping(); }
   function save() { try { win.localStorage.setItem(storageKey, JSON.stringify(preferences)); } catch { /* The companion remains usable without browser storage. */ } options.onPreferencesChange?.(exportWebPreferences(preferences)); }
   function place() {
+    if (destroyed) return;
+    gazeBounds = null;
     if (drag?.moved) { positionHighlight(); return; }
     const view = viewport(), alreadyCompact = preferences.collapsed || autoAvoid;
     const naturalWidth = win.innerWidth <= 640 ? 96 : 128, fullSize = {width: naturalWidth, height: naturalWidth * 208 / 192};
@@ -114,24 +118,30 @@ export function mountAndromeda(options = {}) {
     bubble.style.right = point.left < view.width / 2 ? 'auto' : '0'; bubble.style.left = point.left < view.width / 2 ? '0' : 'auto';
     const roomAbove = point.top > 150;
     bubble.style.bottom = roomAbove ? 'calc(100% + 10px)' : 'auto'; bubble.style.top = roomAbove ? 'auto' : 'calc(100% + 10px)';
-    if (win.innerWidth > 640) { panel.style.left = `${Math.max(16, Math.min(view.width - 376, point.left - 230)) + view.left}px`; panel.style.right = 'auto'; panel.style.top = `${Math.max(16, Math.min(view.height - Math.min(600, view.height - 32), point.top - 420)) + view.top}px`; panel.style.bottom = 'auto'; }
+    if (win.innerWidth > 640) { panel.style.left = `${Math.max(16, Math.min(view.width - 376, point.left - 230)) + view.left}px`; panel.style.right = 'auto'; panel.style.top = `${Math.max(16, Math.min(view.height - Math.min(650, view.height - 44) - 16, point.top - 420)) + view.top}px`; panel.style.bottom = 'auto'; }
     positionHighlight();
   }
   function draw(row = manifest?.neutral?.row || 0, column = manifest?.neutral?.column || 0) {
     if (preferences.visualStyle === 'studio' && studioImage) { drawStudio(); return; }
     if (!ctx || !atlas || !manifest || suspended()) return;
+    const frameKey = `classic:${row}:${column}:${canvas.width}:${canvas.height}`;
+    if (drawnFrame === frameKey) return;
     try {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(atlas, ...cropRect(manifest.atlas, row, column), 0, 0, canvas.width, canvas.height);
+      drawnFrame = frameKey;
       canvas.dataset.row = String(row); canvas.dataset.column = String(column); poster.hidden = true; fallback.hidden = true;
     } catch { atlas = null; canvas.dataset.assetState = 'fallback'; poster.hidden = !posterLoaded; fallback.hidden = posterLoaded; stopAnimation(); }
   }
   function drawStudio(semantic = 'idle') {
     if (!ctx || !studioImage || suspended()) return;
+    const frameKey = `studio:${semantic}:${canvas.width}:${canvas.height}`;
+    if (drawnFrame === frameKey) return;
     const pose = studioCrop(semantic, studioImage.naturalWidth, studioImage.naturalHeight), [, , width, height] = pose.rect;
     const scale = Math.min(canvas.width / width, canvas.height / height);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(studioImage, ...pose.rect, (canvas.width - width * scale) / 2, canvas.height - height * scale, width * scale, height * scale);
+    drawnFrame = frameKey;
     canvas.dataset.pose = semantic; canvas.dataset.visualStyle = 'studio'; poster.hidden = fallback.hidden = true;
   }
   function ensureStudio() {
@@ -155,7 +165,7 @@ export function mountAndromeda(options = {}) {
     stopAnimation();
     if (preferences.visualStyle === 'studio' && studioImage) { drawStudio(semantic); animationTimer = later(() => drawStudio(), 1800); return true; }
     let resolved;
-    try { resolved = pack ? resolveAction(pack, semantic, {reducedMotion: reduced()}) : null; } catch { return false; }
+    try { resolved = resolveAction?.(semantic, {reducedMotion: reduced()}); } catch { return false; }
     const name = Object.hasOwn(manifest.animations, semantic) ? semantic : resolved?.animation || semanticAnimation(semantic, manifest), clip = manifest.animations[name];
     if (!clip) { draw(resolved?.row, resolved?.column); scheduleIdle(); return true; }
     action = {name, start: win.performance.now()};
@@ -190,7 +200,8 @@ export function mountAndromeda(options = {}) {
     if (state.active && !state.paused && state.active.id !== shownEvent) {
       shownEvent = state.active.id; say(state.active.text, {action: state.active.action, force: true, duration: Math.max(1500, state.active.remainingMs)});
     }
-    if (!state.paused && (state.active || state.queue.length)) schedulerTimer = later(pumpEvents, state.active ? Math.max(100, state.active.remainingMs) : 1000);
+    const delay = scheduler.nextDelay();
+    if (delay !== null) schedulerTimer = later(pumpEvents, delay);
   }
   function handleEvents(result) {
     if (suspended()) return result;
@@ -200,6 +211,7 @@ export function mountAndromeda(options = {}) {
   function interaction(kind) { if (preferences.interaction) return handleEvents(engine.dispatch({type: 'interaction', kind})); }
   function update(patch) { if (destroyed) return; preferences = normalizeWebPreferences({...preferences, ...patch}); save(); engine.dispatch({type: 'preferences.update', patch: {motion: preferences.motion, sound: preferences.sound, reducedMotion: reduced()}}); renderState(); }
   function renderState() {
+    if (destroyed) return;
     stopAnimation(); const collapsed = preferences.collapsed || autoAvoid;
     character.hidden = collapsed; restore.hidden = !collapsed; pet.classList.toggle('is-collapsed', collapsed); pet.dataset.theme = preferences.theme;
     pet.hidden = doc.hidden || !!doc.fullscreenElement;
@@ -267,7 +279,14 @@ export function mountAndromeda(options = {}) {
     listen(visualStyle, 'change', () => update({visualStyle: visualStyle.value}));
     const importFile = el('input', {type: 'file', accept: '.json,application/json', class: 'file', 'aria-label': '导入偏好文件'});
     const status = el('p', {class: 'muted', role: 'status', text: '偏好仅保存在本浏览器；导出不包含位置、任务或记忆。'});
-    listen(importFile, 'change', async () => { try { const file = importFile.files?.[0]; if (!file) return; if (file.size > 16384) throw new Error('文件过大'); const data = JSON.parse(await file.text()); preferences = importWebPreferences(data, preferences); save(); open(); } catch { status.textContent = '无法导入：请选择有效的星璇偏好 JSON 文件（不超过 16 KB）。'; } });
+    listen(importFile, 'change', async () => {
+      try {
+        const file = importFile.files?.[0]; if (!file) return;
+        if (file.size > 16384) throw new Error('文件过大');
+        const text = await file.text(); if (destroyed) return;
+        preferences = importWebPreferences(JSON.parse(text), preferences); save(); open();
+      } catch { if (!destroyed) status.textContent = '无法导入：请选择有效的星璇偏好 JSON 文件（不超过 16 KB）。'; }
+    });
     const actions = el('div', {class: 'row'}, [button('挥挥手', () => { closePanel(false); interaction('greet'); play('greet'); }), button('摸摸头', () => { closePanel(false); interaction('pet'); play('happy'); }), button('收起', () => update({collapsed: true}))]);
     readingView = el('section', {class: 'reading-card', 'aria-label': '本页阅读彩蛋'});
     if (options.tour?.length) actions.prepend(button('带我逛逛', () => startTour(), true));
@@ -291,8 +310,9 @@ export function mountAndromeda(options = {}) {
     place(); updateReading(); pumpEvents(); close.focus({preventScroll: true});
   }
   function downloadPreferences() {
-    const blob = new Blob([JSON.stringify(exportWebPreferences(preferences), null, 2)], {type: 'application/json'}), url = URL.createObjectURL(blob);
-    const anchor = el('a', {href: url, download: 'andromeda-preferences.json'}); root.append(anchor); anchor.click(); anchor.remove(); later(() => URL.revokeObjectURL(url), 1000);
+    const blob = new Blob([JSON.stringify(exportWebPreferences(preferences), null, 2)], {type: 'application/json'}), url = win.URL.createObjectURL(blob);
+    downloadUrls.add(url);
+    const anchor = el('a', {href: url, download: 'andromeda-preferences.json'}); root.append(anchor); anchor.click(); anchor.remove(); later(() => { win.URL.revokeObjectURL(url); downloadUrls.delete(url); }, 1000);
   }
   function startGame() {
     if (!preferences.interaction) return;
@@ -325,6 +345,7 @@ export function mountAndromeda(options = {}) {
     target?.scrollIntoView({behavior: reduced() ? 'instant' : 'smooth', block: 'center'}); positionHighlight(); later(positionHighlight, 350); place();
   }
   function syncSession() {
+    if (destroyed) return null;
     let session = null; try { session = options.getSession?.(); } catch { /* No inferred authentication. */ }
     const user = session?.authenticated === true ? cleanText(session.userId, 128) : null;
     if (user !== sessionUser) { sessionUser = user; engine = createCompanionEngine({}, {role: user ? 'owner' : 'visitor', timezoneOffsetMinutes: -new Date().getTimezoneOffset()}); scheduler.clear(); shownEvent = null; hideBubble(); }
@@ -376,7 +397,7 @@ export function mountAndromeda(options = {}) {
   listen(doc, 'pointerdown', event => { if (panelOpen && !event.composedPath().includes(host)) closePanel(false); });
   listen(doc, 'pointermove', event => {
     if (event.pointerType !== 'mouse' || !preferences.gaze || preferences.visualStyle === 'studio' || reduced() || suspended() || action || drag || panelOpen || !atlas || !manifest?.lookDirections) return;
-    const rect = canvas.getBoundingClientRect(), dx = event.clientX - rect.left - rect.width / 2, dy = event.clientY - rect.top - rect.height / 2, distance = Math.hypot(dx, dy);
+    const rect = gazeBounds ||= canvas.getBoundingClientRect(), dx = event.clientX - rect.left - rect.width / 2, dy = event.clientY - rect.top - rect.height / 2, distance = Math.hypot(dx, dy);
     if (distance > 260 || distance < 24) { draw(); return; }
     const cell = nearestLookCell(manifest.lookDirections, manifest.atlas.columns, dx, dy);
     if (cell) draw(cell.row, cell.column);
@@ -404,12 +425,13 @@ export function mountAndromeda(options = {}) {
   listen(doc, 'play', event => { if (event.target?.tagName === 'VIDEO') { playingMedia.add(event.target); checkInput(); } }, {capture: true});
   for (const type of ['pause', 'ended', 'emptied']) listen(doc, type, event => { playingMedia.delete(event.target); checkInput(); }, {capture: true});
   listen(doc, 'visibilitychange', () => { syncSession(); renderState(); if (doc.hidden) audioContext?.suspend().catch(() => {}); });
-  listen(doc, 'fullscreenchange', renderState); listen(win, 'resize', () => { layoutOverride = false; place(); }); listen(win, 'scroll', () => { positionHighlight(); if (preferences.readingRewards && readingTimer === undefined) updateReading(); if (avoidSelectors.length && layoutTimer === undefined) layoutTimer = later(() => { layoutTimer = undefined; place(); }, 80); }, {passive: true});
+  listen(doc, 'fullscreenchange', renderState); listen(win, 'resize', () => { layoutOverride = false; place(); }); listen(win, 'scroll', () => { gazeBounds = null; positionHighlight(); if (preferences.readingRewards && readingTimer === undefined) updateReading(); if (avoidSelectors.length && layoutTimer === undefined) layoutTimer = later(() => { layoutTimer = undefined; place(); }, 80); }, {passive: true});
   if (avoidSelectors.length && win.ResizeObserver) { layoutObserver = new win.ResizeObserver(() => place()); layoutObserver.observe(doc.body); }
   if (avoidSelectors.length) listen(doc, 'load', place, {capture: true});
   if (avoidSelectors.length) for (const type of ['transitionend', 'animationend']) listen(doc, type, place, {capture: true});
   if (win.visualViewport) { listen(win.visualViewport, 'resize', place); listen(win.visualViewport, 'scroll', place); }
   listen(reducedMedia, 'change', renderState);
+  listen(stylesheet, 'load', place);
   listen(poster, 'load', () => { posterLoaded = true; fallback.hidden = true; }); listen(poster, 'error', () => { poster.hidden = true; fallback.hidden = false; });
   async function loadImage(url, image = new win.Image()) {
     const safe = sameOriginAsset(url, import.meta.url, win.location.origin);
@@ -439,6 +461,7 @@ export function mountAndromeda(options = {}) {
       const loaded = await loadImage(prepared.imageUrl);
       if (loaded.naturalWidth !== prepared.pack.atlas.width || loaded.naturalHeight !== prepared.pack.atlas.height) throw new Error('角色图集尺寸不匹配');
       if (destroyed) return; manifest = prepared.manifest; pack = prepared.pack; atlas = loaded;
+      resolveAction = createActionResolver(pack); drawnFrame = null;
       canvas.width = pack.atlas.cellWidth; canvas.height = pack.atlas.cellHeight; canvas.dataset.characterId = pack.id;
       canvas.dataset.assetState = 'ready'; place(); draw(); scheduleIdle();
     } catch (error) { if (!destroyed) { canvas.dataset.assetState = 'fallback'; options.onError?.({code: 'ASSET_UNAVAILABLE', message: error.message}); } }
@@ -448,7 +471,16 @@ export function mountAndromeda(options = {}) {
     ready, open, play, say, receiveTask, refreshSession: syncSession,
     collapse: () => update({collapsed: true}), restore: () => update({collapsed: false, dock: null}),
     getPreferences: () => ({...preferences}), exportPreferences: () => exportWebPreferences(preferences),
-    importPreferences: data => { preferences = importWebPreferences(data, preferences); save(); renderState(); return exportWebPreferences(preferences); },
-    destroy() { if (destroyed) return; destroyed = true; abort.abort(); layoutObserver?.disconnect(); for (const timer of activeTimers) win.clearTimeout(timer); activeTimers.clear(); audioContext?.close().catch(() => {}); host.remove(); atlas = manifest = null; },
+    importPreferences: data => { if (!destroyed) { preferences = importWebPreferences(data, preferences); save(); renderState(); } return exportWebPreferences(preferences); },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true; abort.abort(); layoutObserver?.disconnect();
+      for (const timer of activeTimers) win.clearTimeout(timer); activeTimers.clear();
+      for (const url of downloadUrls) win.URL.revokeObjectURL(url); downloadUrls.clear();
+      scheduler.clear(); playingMedia.clear(); audioContext?.close().catch(() => {});
+      if (atlas) atlas.src = ''; if (studioImage) studioImage.src = ''; poster.removeAttribute('src');
+      canvas.width = canvas.height = 0; panel.replaceChildren(); host.remove();
+      atlas = studioImage = manifest = pack = resolveAction = readingTarget = readingView = drag = null;
+    },
   });
 }

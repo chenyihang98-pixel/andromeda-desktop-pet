@@ -1,7 +1,7 @@
 {
   "name": "andromeda-desktop-pet",
   "productName": "Andromeda",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "一款开发中的桌宠",
   "private": true,
   "license": "UNLICENSED",
@@ -20,7 +20,9 @@
     "build:web": "node scripts/version-info.mjs && node scripts/build-web.mjs",
     "build:win": "npm run verify && electron-builder --win zip --x64 --publish never && node scripts/checksums.mjs",
     "build:dir": "electron-builder --dir --publish never",
-    "pack:assets": "node scripts/pack-assets.mjs"
+    "pack:assets": "node scripts/pack-assets.mjs",
+    "profile:resources": "electron scripts/resource-probe.cjs",
+    "test:proportions": "node scripts/proportion-test.mjs"
   },
   "devDependencies": {
     "electron": "44.5.1",
@@ -65,7 +67,10 @@
     ],
     "win": {
       "extraResources": [
-        { "from": "dist/native/windows-fullscreen.exe", "to": "native/windows-fullscreen.exe" }
+        {
+          "from": "dist/native/windows-fullscreen.exe",
+          "to": "native/windows-fullscreen.exe"
+        }
       ],
       "target": [
         "zip"
@@ -81,7 +86,7 @@
       "category": "Utility",
       "icon": "assets/icon.png"
     },
-    "compression": "maximum",
+    "compression": "normal",
     "electronLanguages": [
       "zh-CN",
       "en-US"

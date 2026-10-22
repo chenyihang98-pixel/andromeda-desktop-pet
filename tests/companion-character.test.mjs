@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { characterPackFromAtlas, validateCharacterPack, resolveAction } from '../src/shared/character.mjs';
+import { characterPackFromAtlas, validateCharacterPack, resolveAction, createActionResolver } from '../src/shared/character.mjs';
 
 const atlas = JSON.parse(await readFile(new URL('../assets/manifest.json', import.meta.url), 'utf8'));
 const clone = value => JSON.parse(JSON.stringify(value));
+
+test('prepared resolution owns validated metadata and returns detached clips', () => {
+  const pack = characterPackFromAtlas(atlas), expected = resolveAction(pack, 'greet'), resolve = createActionResolver(pack);
+  pack.actions.greet = 'idle';pack.animations.waving.durationsMs[0] = -1;
+  assert.deepEqual(resolve('greet'), expected);
+  const first = resolve('greet');first.durationsMs[0] = -2;first.anchor.y = -3;
+  assert.deepEqual(resolve('greet'), expected);
+  assert.equal(resolve('greet', {reducedMotion: true}).frameCount, 1);
+  assert.throws(() => createActionResolver(pack));
+  assert.throws(() => resolve('../bad'));
+  assert.throws(() => resolve('greet', {reducedMotion: 'yes'}));
+});
 
 test('current atlas wraps without editing its layout, identity or source rights', () => {
   const original = clone(atlas), pack = characterPackFromAtlas(atlas);

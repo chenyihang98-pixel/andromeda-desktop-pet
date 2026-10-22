@@ -1,7 +1,7 @@
-import {createCompanionEngine, COMPANION_VERSION, DEFAULT_PREFERENCES} from './shared/companion.mjs';
+import {createCompanionEngine, COMPANION_VERSION, DEFAULT_PREFERENCES, MAX_COMPANION_BYTES} from './shared/companion.mjs';
 
 export const BACKUP_SCHEMA = 'andromeda.backup/v1';
-export const MAX_BACKUP_BYTES = 2 * 1024 * 1024;
+export const MAX_BACKUP_BYTES = MAX_COMPANION_BYTES;
 const STATE_FIELDS = ['version', 'scope', 'profile', 'preferences', 'focus', 'todos', 'mood', 'progression',
   'memories', 'notifications', 'tasks', 'seenEventIds', 'routine', 'lastInteractionAt', 'lastTickAt'];
 const COLLECTIONS = ['todos', 'memories', 'notifications', 'tasks', 'seenEventIds'];
@@ -28,7 +28,7 @@ function boundedJSON(value) {
     if (++nodes > 100000 || depth > 12) fail('STRUCTURE', '备份结构过于复杂，未恢复任何记录。');
     if (item === null || typeof item === 'boolean') return;
     if (typeof item === 'number') {if (!Number.isFinite(item)) fail('STRUCTURE', '备份包含非 JSON 数值。');return;}
-    if (typeof item === 'string') {if (item.length > MAX_BACKUP_BYTES) fail('TOO_LARGE', '备份不能超过 2 MiB。');return;}
+    if (typeof item === 'string') {if (item.length > MAX_BACKUP_BYTES) fail('TOO_LARGE', '备份不能超过 4 MiB。');return;}
     if (typeof item !== 'object' || (!Array.isArray(item) && !plainRecord(item)) || seen.has(item)) fail('STRUCTURE', '备份只能包含普通 JSON 数据。');
     if (Array.isArray(item) && item.length > 100000) fail('STRUCTURE', '备份结构过于复杂，未恢复任何记录。');
     seen.add(item);
@@ -43,7 +43,7 @@ function boundedJSON(value) {
   }
   visit(value, 0);
   const text = JSON.stringify(value);
-  if (new TextEncoder().encode(text).length > MAX_BACKUP_BYTES) fail('TOO_LARGE', '备份不能超过 2 MiB。');
+  if (new TextEncoder().encode(text).length > MAX_BACKUP_BYTES) fail('TOO_LARGE', '备份不能超过 4 MiB。');
   return JSON.parse(text);
 }
 

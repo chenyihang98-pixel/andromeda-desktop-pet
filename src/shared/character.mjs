@@ -128,7 +128,17 @@ export function characterPackFromAtlas(manifest, metadata = {}) {
 
 /** Returns a checked animation or a neutral pose; fallback is explicit in the result. */
 export function resolveAction(pack, semantic, { reducedMotion = false } = {}) {
+  return resolveCheckedAction(validateCharacterPack(pack), semantic, reducedMotion);
+}
+
+/** Normalize once into a private copy. Neither callers nor returned clips can
+ * mutate the checked metadata, so playback need not revalidate an entire pack. */
+export function createActionResolver(pack) {
   const character = validateCharacterPack(pack);
+  return (semantic, {reducedMotion = false} = {}) => resolveCheckedAction(character, semantic, reducedMotion);
+}
+
+function resolveCheckedAction(character, semantic, reducedMotion) {
   name(semantic);
   if (typeof reducedMotion !== 'boolean') throw new TypeError('减少动画选项无效');
   const declared = Object.hasOwn(character.actions, semantic) ? character.actions[semantic] : null;

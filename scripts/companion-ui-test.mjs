@@ -13,9 +13,12 @@ try {
   await mkdir('qa',{recursive:true});
   const page=await browser.newPage({viewport:{width:1080,height:780}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(()=>{
+    let pendingChat=null, chatSerial=0;
     let receive,engine,assistant={enabled:false,endpoint:'https://example.test/v1',model:'',asrModel:'',ttsModel:'',voice:'alloy',dailyRequestLimit:50,captureEnabled:false,toolsEnabled:false,status:{kind:'idle'},history:[],pendingTools:[],usage:{requests:0},hasApiKey:false,keyStorage:'none'};
     const ready=import('/src/shared/companion.mjs').then(({createCompanionEngine})=>{engine=createCompanionEngine();});
     window.calls=[];window.testBackup=async()=>{await ready;return{schema:'andromeda.backup/v1',companion:engine.serialize()};};
+    window.testPublish=value=>receive(value);window.testRefresh=()=>receive({companion:engine.snapshot(),assistant});
+    window.testHoldChat=false;window.testFinishChat=text=>pendingChat?.resolve(text);
     window.andromeda={
       getState:async()=>({version:'0.3.0'}),onCompanion:fn=>{receive=fn;},
       companionState:async()=>{await ready;return{companion:engine.snapshot(),assistant};},
@@ -26,8 +29,16 @@ try {
       taskBridge:async enabled=>({enabled,running:enabled,port:12345,token:'test-only'}),
       assistant:async({method,payload})=>{
         if(method==='configure'){const{apiKey,...publicConfig}=payload;assistant={...assistant,...publicConfig,hasApiKey:!!apiKey};}
-        if(method==='chat'){assistant.history.push({role:'user',content:payload.text});receive({assistantEvent:{type:'assistant:delta',text:'我们一起慢慢来。'}});assistant.history.push({role:'assistant',content:'我们一起慢慢来。'});}
-        if(method==='clearHistory')assistant.history=[];
+        if(method==='chat'){
+          const requestId='mock-chat-'+(++chatSerial);window.testRequestId=requestId;assistant.status={kind:'chat',requestId};receive({assistantEvent:{type:'assistant:status',status:'chat',requestId}});
+          try{
+            let reply='我们一起慢慢来。';
+            if(window.testHoldChat)reply=await new Promise((resolve,reject)=>{pendingChat={resolve,reject};});
+            else receive({assistantEvent:{type:'assistant:delta',requestId,text:reply}});
+            assistant.history.push({role:'user',content:payload.text},{role:'assistant',content:reply});
+          }finally{pendingChat=null;assistant.status={kind:'idle'};}
+        }
+        if(method==='clearHistory'){pendingChat?.reject(new Error('已停止。'));assistant.history=[];assistant.status={kind:'idle'};}
         if(method==='proposeTool')assistant.pendingTools.push({id:'card-1',name:payload.name,label:'待办操作',args:payload.args});
         if(method==='confirmTool'){if(payload.confirmed)await window.andromeda.command({type:'todo.add',text:assistant.pendingTools[0].args.text});assistant.pendingTools=[];}
         receive({assistant});return assistant;
@@ -45,11 +56,38 @@ try {
   await page.screenshot({path:'qa/companion-tasks.png',fullPage:true});
   await page.locator('[data-tab=memory]').click();await page.locator('#memory-text').fill('喜欢安静、简短的回答。');await page.locator('#memory-form button').click();
   equal(await page.locator('#memories .item').count(),1);await page.locator('#memories button').filter({hasText:'修改'}).click();await page.locator('#memories textarea').fill('重要事项请提醒一次。');await page.locator('#memories button').click();equal(await page.locator('#memories p').textContent(),'重要事项请提醒一次。');
+  await page.evaluate(async()=>{await window.andromeda.command({type:'memory.add',text:'相同文字'});await window.andromeda.command({type:'memory.add',text:'相同文字'});});
+  const duplicates=page.locator('#memories .item').filter({has:page.locator('p').filter({hasText:/^相同文字$/})});
+  const editingId=await duplicates.nth(1).getAttribute('data-entry-id');await duplicates.nth(1).getByRole('button',{name:'修改',exact:true}).click();
+  await page.locator('#memories textarea').fill('只编辑选中的第二条');
+  await page.evaluate(async()=>{await window.andromeda.command({type:'todo.add',text:'与编辑无关的更新'});window.testRefresh();});
+  equal(await page.locator('#memories textarea').inputValue(),'只编辑选中的第二条');equal(await page.locator('#memories textarea').evaluate(node=>node===document.activeElement),true);
+  await page.locator('#memories').getByRole('button',{name:'保存修改'}).click();
+  equal(await page.evaluate(async id=>(await window.testBackup()).companion.memories.find(row=>row.id===id).text,editingId),'只编辑选中的第二条');
+  equal(await page.locator('#memories p').filter({hasText:/^相同文字$/}).count(),1);
   await page.locator('[data-tab=preferences]').click();await page.locator('#owner-name').fill('星匠');await page.locator('#profile-form button').click();equal(await page.locator('#hello').textContent(),'你好，星匠。');
   const backup=await page.evaluate(()=>window.testBackup());backup.companion.profile.ownerName='备份中的名字';await page.locator('#import-backup').setInputFiles({name:'backup.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(backup))});await page.locator('#restore-dialog').waitFor({state:'visible'});equal(await page.locator('#hello').textContent(),'你好，星匠。');await page.locator('#cancel-restore').click();equal(await page.locator('#hello').textContent(),'你好，星匠。');await page.locator('#import-backup').setInputFiles({name:'backup.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(backup))});await page.locator('#confirm-restore').click();await page.locator('#restore-dialog').waitFor({state:'hidden'});equal(await page.locator('#hello').textContent(),'你好，备份中的名字。');
   await page.locator('#ai-enabled').check();await page.locator('#ai-model').fill('mock-only');await page.locator('#ai-key').fill('not-a-real-key');await page.locator('#ai-tools').check();await page.locator('#assistant-config button').click();equal(await page.locator('#ai-key').inputValue(),'');
   await page.locator('[data-tab=chat]').click();await page.locator('#chat-text').fill('帮我想想今天怎么安排。');await page.locator('#chat-send').click();await page.locator('#chat-text').filter({visible:true}).waitFor();equal(await page.locator('#chat-history .message.assistant').last().textContent(),'我们一起慢慢来。');
   await page.locator('#tool-name').selectOption('addTodo');await page.locator('#tool-text').fill('操作卡新增待办');await page.locator('#tool-form button').click();equal(await page.locator('#tool-cards .item').count(),1);await page.locator('#tool-cards button').filter({hasText:'取消'}).click();equal(await page.locator('#tool-cards .item').count(),0);
+  await page.locator('#tool-form button').click();await page.locator('#tool-cards button').filter({hasText:'确认执行'}).focus();await page.evaluate(()=>window.testRefresh());
+  equal(await page.locator('#tool-cards button').filter({hasText:'确认执行'}).evaluate(node=>node===document.activeElement),true);
+  await page.locator('#tool-cards button').filter({hasText:'取消'}).click();
+  await page.evaluate(()=>{window.testHoldChat=true;});await page.locator('#chat-text').fill('流式回归');await page.locator('#chat-send').click();
+  await page.waitForFunction(()=>Boolean(window.testRequestId&&document.querySelector('#chat-send').disabled));
+  const streamed=await page.evaluate(async()=>{
+    const node=[...document.querySelectorAll('#chat-history .message.assistant')].at(-1);let mutations=0;
+    const observer=new MutationObserver(rows=>{mutations+=rows.length;});observer.observe(node,{childList:true,characterData:true,subtree:true});
+    window.testPublish({assistantEvent:{type:'assistant:delta',requestId:'stale-request',text:'不应出现'}});
+    for(let i=0;i<200;i++)window.testPublish({assistantEvent:{type:'assistant:delta',requestId:window.testRequestId,text:'星'}});
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));observer.disconnect();
+    return{text:node.textContent,mutations};
+  });equal(streamed.text,'星'.repeat(200));assert.ok(streamed.mutations<=2);checks++;
+  await page.evaluate(()=>window.testFinishChat('星'.repeat(200)));await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);
+  equal(await page.locator('#chat-history .message.assistant').last().textContent(),'星'.repeat(200));
+  await page.locator('#chat-text').fill('取消中的流式');await page.locator('#chat-send').click();await page.locator('#clear-chat').click();
+  await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);await page.evaluate(()=>window.testPublish({assistantEvent:{type:'assistant:delta',requestId:window.testRequestId,text:'过时数据'}}));
+  equal(await page.locator('#chat-history').textContent(),'你好，想说点什么都可以。对话服务按需开启。');await page.evaluate(()=>{window.testHoldChat=false;});
   await page.locator('[data-tab=appearance]').click();await page.locator('#visual-style').selectOption('studio');await page.locator('#theme').selectOption('dawn');
   await page.locator('#open-editor').click();await page.getByRole('button',{name:'应用 JSON',exact:true}).click();assert.match(await page.locator('#editor-root [role=status]').textContent(),/通过/);checks++;await page.getByRole('button',{name:'导出角色包与所选图集',exact:true}).click();equal(await page.locator('#status').textContent(),'角色图片与动作已一起导出为 ZIP。');await page.locator('#close-editor').click();
   await page.screenshot({path:'qa/companion-appearance.png',fullPage:true});

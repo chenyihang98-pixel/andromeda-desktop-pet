@@ -26,3 +26,12 @@ export function cropRect(atlas, row, column) {
   if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0 || row >= atlas.rows || column >= atlas.columns) throw new RangeError('Invalid sprite cell');
   return [column * atlas.cellWidth, row * atlas.cellHeight, atlas.cellWidth, atlas.cellHeight];
 }
+
+/** Preserve the source aspect ratio, centered horizontally and resting on the
+ * target's bottom edge. Fractional sprite cells are supported without stretching. */
+export function containRect(sourceWidth, sourceHeight, targetWidth, targetHeight) {
+  if (![sourceWidth, sourceHeight, targetWidth, targetHeight].every(value => Number.isFinite(value) && value > 0)) throw new RangeError('Invalid image or target dimensions');
+  const scale = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const width = sourceWidth * scale, height = sourceHeight * scale;
+  return {x: (targetWidth - width) / 2, y: targetHeight - height, width, height};
+}

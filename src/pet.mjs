@@ -34,7 +34,7 @@ function scheduleIdle() {
   // Global gaze is a calm continuous pose: it replaces autonomous idle, never
   // explicit actions. The main process samples the cursor; no coordinates leave
   // this renderer. Local gaze remains a separate hover-only preference.
-  if (paused() || dragging || settings.globalGaze || (settings.gaze && pointerOver) || reducedMotion.matches || window.andromedaEnhancements?.busy?.()) return;
+  if (paused() || dragging || settings.globalGaze || (settings.gaze && pointerOver) || reducedMotion.matches || window.andromedaEnhancements?.reduced?.() || window.andromedaEnhancements?.busy?.()) return;
   const delay = neutralDelay(settings.motion);
   if (delay !== null) timer = setTimeout(() => {if(!window.andromedaEnhancements?.idle?.())play('idle');}, delay);
 }
@@ -64,7 +64,6 @@ function applyState(state) {
   const surfaceChanged = visible !== nextVisible || dock?.edge !== nextDock?.edge || dock?.collapsed !== nextDock?.collapsed;
   settings = nextSettings; visible = nextVisible; dock = nextDock;
   if(gazeChanged)window.andromedaEnhancements?.neutralGaze?.();
-  window.andromedaEnhancements?.onState?.(state);
   const collapsed = Boolean(dock?.collapsed);
   document.body.dataset.dock = dock?.edge || '';
   document.body.classList.toggle('collapsed', collapsed);
@@ -77,6 +76,9 @@ function applyState(state) {
   // Position saves and persistence/tray updates can arrive mid-action. Do not
   // restart playback or postpone the quiet interval for those notifications.
   if (surfaceChanged || motionChanged || (gazeChanged && (!sequence || sequence.state === 'idle'))) neutral();
+  // Reset the old surface before the scheduler resumes its suspended action.
+  // Reversing this order would immediately overwrite the resumed animation.
+  window.andromedaEnhancements?.onState?.(state);
 }
 function finishDrag(cancelled = false) {
   if (!dragging) return;
@@ -147,6 +149,7 @@ document.addEventListener('contextmenu', () => finishDrag(true));
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pointerOver = false; finishDrag(true); }
   neutral();
+  window.andromedaEnhancements?.onVisibility?.();
 });
 reducedMotion.addEventListener('change', neutral);
 try {

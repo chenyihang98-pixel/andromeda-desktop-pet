@@ -18,12 +18,18 @@ app.whenReady().then(async()=>{
     result.displays=screen.getAllDisplays().map(({bounds,workArea,scaleFactor})=>({bounds,workArea,scaleFactor}));
     let pet;await until(()=>{pet=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/pet.html'));return pet&&!pet.webContents.isLoading();});
     await until(()=>pet.webContents.executeJavaScript("document.querySelector('#pet').dataset.row==='0'"));
+    check(await pet.webContents.executeJavaScript("!performance.getEntriesByType('resource').some(item=>item.name.includes('/studio/'))"),'classic startup does not load optional Studio artwork');
+    for(const scale of [.75,1,1.25,1.5,2]) {
+      await pet.webContents.executeJavaScript('window.andromeda.setSettings('+JSON.stringify({scale})+')');
+      check(await pet.webContents.executeJavaScript("(()=>{const r=document.querySelector('#pet').getBoundingClientRect();return Math.abs(r.width/r.height-12/13)<.001&&r.left>=-.1&&r.top>=-.1&&r.right<=innerWidth+.1&&r.bottom<=innerHeight+.1;})()"),`native canvas preserves ratio at ${scale*100}% pet scale on current display`);
+    }
+    await pet.webContents.executeJavaScript('window.andromeda.setSettings({scale:1.25})');
     check(await pet.webContents.executeJavaScript("window.andromeda.companionState().then(()=>false,()=>true)"),'pet renderer denied private state');
     await pet.webContents.executeJavaScript('window.andromeda.showCompanion()');
     let panel;await until(()=>{panel=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/companion.html'));return panel&&!panel.webContents.isLoading();});
     await until(()=>panel.webContents.executeJavaScript("document.querySelector('#hello').textContent.includes('你好，你')"));
     check((await panel.webContents.executeJavaScript('window.andromeda.companionState()')).companion.scope==='owner','private owner panel loads');
-    check(await panel.webContents.executeJavaScript("[...document.querySelectorAll('.sheet')].every(img=>img.complete&&img.naturalWidth>0)"),'new artwork loads over the local CSP protocol');
+    check(await panel.webContents.executeJavaScript("document.querySelector('.hero-pet').complete&&document.querySelector('.hero-pet').naturalWidth>0"),'visible artwork loads over the local CSP protocol');
     await panel.webContents.executeJavaScript("window.andromeda.command({type:'todo.add',text:'原生运行验收提醒',dueAt:Date.now()})");
     await until(()=>pet.webContents.executeJavaScript("!document.querySelector('#bubble').hidden"));check(true,'passive semantic bubble reaches real pet renderer');
     await fs.promises.writeFile(path.join(qa,'native-companion.png'),(await panel.webContents.capturePage()).toPNG());
@@ -37,6 +43,7 @@ app.whenReady().then(async()=>{
     check((await panel.webContents.executeJavaScript('window.andromeda.companionState()')).companion.focus.status==='paused','focus pause persists through real IPC');
     check((await panel.webContents.executeJavaScript('window.andromeda.companionState()')).assistant.enabled===false,'AI remains disabled without configuration');
     await panel.webContents.executeJavaScript("document.querySelector('[data-tab=appearance]').click();document.querySelector('#open-editor').click()");
+    check(await panel.webContents.executeJavaScript("Promise.all([...document.querySelectorAll('.sheet')].map(img=>{img.loading='eager';return img.decode();})).then(()=>true)"),'optional artwork decodes when explicitly requested');
     await until(()=>panel.webContents.executeJavaScript("!!document.querySelector('#editor-root canvas')&&document.querySelector('#editor-dialog').open"));
     check(await panel.webContents.executeJavaScript("document.querySelector('#editor-root [role=status]').textContent.includes('载入')"),'visual character editor loads native bundled atlas');
     await fs.promises.writeFile(path.join(qa,'native-editor.png'),(await panel.webContents.capturePage()).toPNG());

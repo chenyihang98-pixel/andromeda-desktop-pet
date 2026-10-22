@@ -18,7 +18,7 @@ function element(dataset = {}) {
   };
 }
 async function createSettings({trayAvailable = true, fullscreenAvailable = true, persistenceError = null, apiAvailable = true, failure = null} = {}) {
-  const ids = ['status', 'scale', 'scale-value', 'alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen', 'fullscreen-help', 'version', 'hide', 'quit', 'reset', 'releases', 'click-through-help', 'desktop-state'];
+  const ids = ['status', 'scale', 'scale-value', 'scale-help', 'alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen', 'fullscreen-help', 'version', 'hide', 'quit', 'reset', 'releases', 'click-through-help', 'desktop-state'];
   const elements = Object.fromEntries(ids.map(id => [id, element()]));
   const motions = ['still', 'quiet', 'lively'].map(motion => element({motion}));
   const actions = ['wave', 'jump', 'wait', 'review'].map(action => element({action}));

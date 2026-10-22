@@ -153,5 +153,17 @@ try {
   await custom.getByRole('button', {name: '展开星璇向导'}).click(); equal(await custom.locator('[data-andromeda] .character').isVisible(), true); equal(await custom.getByRole('dialog').isVisible(), true);
   await custom.getByRole('button', {name: '关闭向导面板'}).click(); equal(await custom.locator('[data-andromeda] .restore').isVisible(), true);
   await custom.evaluate(() => { document.querySelector('#critical-fixture').remove(); dispatchEvent(new Event('resize')); }); equal(await custom.locator('[data-andromeda] .character').isVisible(), true);
+  const delayedImport = await custom.evaluate(async () => {
+    demoGuide.destroy(); let finish, writes = 0;
+    window.demoGuide = (await import('/web/andromeda.mjs')).mountAndromeda({characterPackUrl: '/__fixtures/character.json', storageKey: 'qa.destroy.file', onPreferencesChange: () => { writes++; }});
+    await demoGuide.ready; demoGuide.open();
+    const input = document.querySelector('[data-andromeda]').shadowRoot.querySelector('input[type=file]');
+    Object.defineProperty(input, 'files', {value: [{size: 100, text: () => new Promise(done => { finish = done; })}]});
+    input.dispatchEvent(new Event('change')); demoGuide.destroy();
+    finish(JSON.stringify({schema: 'andromeda.preferences/v1', preferences: {sound: true}}));
+    await Promise.resolve(); await Promise.resolve();
+    return {writes, stored: localStorage.getItem('qa.destroy.file'), sound: demoGuide.getPreferences().sound, widgets: document.querySelectorAll('[data-andromeda]').length};
+  });
+  equal(delayedImport, {writes: 0, stored: null, sound: false, widgets: 0});
   equal(errors, []); console.log(`Web browser QA passed: ${checks} assertions; qa/web-desktop.png, qa/web-mobile.png`);
 } finally { if (browser) await browser.close(); await new Promise(done => server.close(done)); }

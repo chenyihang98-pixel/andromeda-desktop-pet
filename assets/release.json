@@ -1,6 +1,6 @@
 {
   "schema": "andromeda.release/v1",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "character": "andromeda",
   "spriteVersion": 2,
   "desktop": {

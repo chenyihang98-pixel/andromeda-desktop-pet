@@ -5,14 +5,17 @@ const {randomUUID} = require('node:crypto');
 const {createAssistantService} = require('./services/assistant.cjs');
 
 // The host owns private state. Renderers receive bounded commands, never paths or credentials.
-function createCompanionHost({directory, safeStorage, publish, emit, capture, openLink, assistantFetch}) {
+function createCompanionHost({directory, safeStorage, publish, emit, capture, openLink, assistantFetch,
+  now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout}) {
   let engine, assistant, timer, persistenceError = null, stopped = false, bridge, makeEngine, validateBackup;
-  const maximumBytes = 2 * 1024 * 1024, assistantOperations = new Map(), assistantTerminal = new Set();
+  let focusActive = false, savedRevision = 0, savedAt = 0;
+  let maximumBytes;
+  const assistantOperations = new Map(), assistantTerminal = new Set();
   const filename = path.join(directory, 'companion-v1.json');
   function checkRunning() { if (stopped) throw new Error('陪伴服务已停止'); }
   function atomicWrite(target, value) {
     const text = JSON.stringify(value);
-    if (Buffer.byteLength(text, 'utf8') > maximumBytes) throw new Error('陪伴存档超过 2 MiB，请整理记录后重试。');
+    if (Buffer.byteLength(text, 'utf8') > maximumBytes) throw new Error('陪伴存档超过 4 MiB，请整理记录后重试。');
     const temporary = target + '.' + randomUUID() + '.tmp';let fd;
     try {
       fs.mkdirSync(directory, {recursive: true});
@@ -22,15 +25,34 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
   }
   function save() {
     if (!engine) return;
+    savedAt = now(); // A failed disk must not turn an overdue checkpoint into a busy retry loop.
     try {
-      atomicWrite(filename, engine.serialize());persistenceError = null;
+      atomicWrite(filename, engine.serialize());persistenceError = null;savedRevision = engine.revision();savedAt = now();
     } catch {persistenceError = '陪伴记录暂时无法保存，请导出备份并检查磁盘。';}
   }
-  function snapshot() { return {companion: engine?.snapshot() || null, assistant: assistant?.snapshot() || null, persistenceError}; }
+  function snapshot() { return {companion: engine?.serialize() || null, assistant: assistant?.snapshot() || null, persistenceError}; }
+  function scheduleWake() {
+    clearTimer(timer);timer = null;
+    if (stopped || !engine) return;
+    const domainDeadline = engine.nextWakeAt(), checkpoint = focusActive ? savedAt + 15_000 : null;
+    const retry = persistenceError && engine.revision() !== savedRevision ? savedAt + 30_000 : null;
+    const deadlines = [domainDeadline, checkpoint, retry].filter(value => value !== null);
+    if (!deadlines.length) return;
+    const deadline = Math.min(...deadlines);
+    timer = setTimer(() => {
+      timer = null;if (stopped) return;
+      if (now() < deadline) {scheduleWake();return;}
+      const result = engine.tick();
+      update(result, engine.revision() !== savedRevision || (focusActive && now() - savedAt >= 15_000));
+    }, Math.max(1, Math.min(2_147_483_647, deadline - now())));
+    timer?.unref?.();
+  }
   function update(result, persist = true) {
+    focusActive = ['running', 'break'].includes(result.state.focus.status);
     if (persist) save();
     for (const event of result.events) emit(event);
-    publish(snapshot()); return {...result, persistenceError};
+    // tick/dispatch already produced a detached state: do not clone it or the assistant history again.
+    publish({companion: result.state, persistenceError});scheduleWake();return {...result, persistenceError};
   }
   function assistantEvent(event) {
     if (stopped) return;
@@ -58,12 +80,14 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
       text, priority: stage === 'error' ? 45 : 40, resumable: false});
   }
   const ready = (async () => {
-    const [{createCompanionEngine}, {validateCompanionBackup}] = await Promise.all([import('./shared/companion.mjs'), import('./backup.mjs')]);
-    makeEngine = saved => createCompanionEngine(saved, {role: 'owner', id: prefix => `${prefix}-${randomUUID()}`, timezoneOffsetMinutes: -new Date().getTimezoneOffset()});
+    const [{createCompanionEngine, MAX_COMPANION_BYTES}, {validateCompanionBackup}] = await Promise.all([import('./shared/companion.mjs'), import('./backup.mjs')]);
+    maximumBytes = MAX_COMPANION_BYTES;
+    makeEngine = saved => createCompanionEngine(saved, {now, role: 'owner', id: prefix => `${prefix}-${randomUUID()}`, timezoneOffsetMinutes: -new Date(now()).getTimezoneOffset()});
     validateBackup = validateCompanionBackup;
     let saved = {};
     try { if (fs.statSync(filename).size <= maximumBytes) saved = JSON.parse(fs.readFileSync(filename, 'utf8')); } catch {}
     engine = makeEngine(saved);
+    savedRevision = engine.revision();savedAt = now();
     assistant = createAssistantService({directory, safeStorage, capture, fetchImpl: assistantFetch,
       toolHandlers: {
         openWebsite: {label: '打开星匠网站', parameters: {type: 'object', properties: {}, additionalProperties: false},
@@ -77,20 +101,19 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
     await assistant.load();
     if (!stopped && assistant.snapshot().persona !== engine.snapshot().profile.persona) await assistant.configure({persona: engine.snapshot().profile.persona});
     if (!stopped) {
-      let seconds = 0;
-      timer = setInterval(() => { const result = engine.tick(); update(result, result.events.length > 0 || ++seconds % 15 === 0); }, 1000);
-      timer.unref?.(); publish(snapshot());
+      const initial = snapshot();focusActive = ['running', 'break'].includes(initial.companion.focus.status);
+      scheduleWake();publish(initial);
     }
   })();
   return {
     ready,
-    publicState() { if (!engine) return null; const state = engine.snapshot(); return {preferences: state.preferences, mood: state.mood.value, routine: state.routine, focusing: state.focus.status === 'running', level: state.progression.level}; },
+    publicState() { return engine?.publicSnapshot() || null; },
     cancelAssistant() { assistant?.cancel(); },
     async state() { await ready; return snapshot(); },
     async dispatch(command) {
       await ready;checkRunning();const result = update(engine.dispatch(command));
       if (command.type === 'profile.update' && assistant.snapshot().persona !== result.state.profile.persona) {
-        await assistant.configure({persona: result.state.profile.persona});if (!stopped) publish(snapshot());
+        await assistant.configure({persona: result.state.profile.persona});if (!stopped) publish({assistant: assistant.snapshot()});
       }
       return result;
     },
@@ -102,7 +125,8 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
         if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new TypeError('智能服务设置无效');
         payload = {...payload, persona: engine.snapshot().profile.persona};
       }
-      const result = await assistant[method](payload);if (!stopped) publish(snapshot());return result;
+      try {return await assistant[method](payload);}
+      finally {if (!stopped) publish({assistant: assistant.snapshot()});}
     },
     async exportData(kind) {
       await ready;
@@ -127,20 +151,22 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
         persistenceError = '恢复未完成，当前记录保持不变。请检查磁盘空间和配置目录权限。';publish(snapshot());
         throw new Error(persistenceError);
       }
-      engine = nextEngine;persistenceError = null;assistant.cancel();
+      engine = nextEngine;persistenceError = null;focusActive = false;savedRevision = engine.revision();savedAt = now();assistant.cancel();scheduleWake();
       if (assistant.snapshot().persona !== restored.profile.persona) await assistant.configure({persona: restored.profile.persona});
-      const result = {...snapshot(), summary, backupFile};if (!stopped) publish(snapshot());return result;
+      const result = {...snapshot(), summary, backupFile};if (!stopped) publish({companion: result.companion, assistant: result.assistant, persistenceError});return result;
     },
     async taskBridge(enabled) {
       await ready;
       checkRunning();
       if (typeof enabled !== 'boolean') throw new TypeError('无效的任务桥设置');
-      bridge ||= require('./services/task-bridge.cjs').createTaskBridge({onEvent: command => update(engine.dispatch(command))});
+      bridge ||= require('./services/task-bridge.cjs').createTaskBridge({onEvent: command => {checkRunning();return update(engine.dispatch(command));}});
       if (enabled) await bridge.start(); else await bridge.stop();
+      if (stopped) {await bridge.stop();checkRunning();}
       const result = bridge.snapshot(); return {...result, enabled: result.running};
     },
-    pause() { assistant?.cancel(); if (engine && ['running', 'break'].includes(engine.snapshot().focus.status)) update(engine.dispatch({type: 'focus.pause'})); },
-    stop() {if (stopped) return;stopped = true;clearInterval(timer);assistant?.cancel();void bridge?.stop();save();},
+    async refresh() {await ready;checkRunning();return update(engine.tick(), engine.revision() !== savedRevision);},
+    pause() {if (stopped) return;assistant?.cancel();if (engine && focusActive) update(engine.dispatch({type: 'focus.pause'}));},
+    stop() {if (stopped) return;stopped = true;clearTimer(timer);timer = null;assistant?.cancel();if (engine && (focusActive || engine.revision() !== savedRevision)) save();return bridge?.stop().catch(() => {});},
   };
 }
 module.exports = {createCompanionHost};

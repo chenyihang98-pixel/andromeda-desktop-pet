@@ -45,6 +45,7 @@ try{
   const errors=[];page.on('pageerror',e=>errors.push(e.message));await setup(page);
   await page.clock.install();
   await page.goto(base+'/src/pet.html');await page.locator('#pet[data-row="0"]').waitFor();
+  ok(await page.evaluate(()=>performance.getEntriesByType('resource').some(item=>item.name.includes('/studio/'))),false);
   ok(await page.locator('#error').isHidden(),true);ok(await page.locator('#pet').getAttribute('data-column'),'0');
   const pixels=await page.evaluate(()=>{const d=document.querySelector('canvas').getContext('2d').getImageData(0,0,192,208).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i])n++;return n;});assert.ok(pixels>1000&&pixels<192*208);checks++;
   await page.screenshot({path:'qa/pet-neutral.png',omitBackground:true});
@@ -109,6 +110,10 @@ try{
   ok((await settings.locator('#status').textContent()).includes('手动查看'),true);
   await settings.locator('#alwaysOnTop').uncheck();ok(await settings.evaluate(()=>window.appState.settings.alwaysOnTop),false);
   await settings.locator('#scale').fill('2');await settings.locator('#scale').dispatchEvent('change');ok(await settings.evaluate(()=>window.appState.settings.scale),2);ok(await settings.locator('#scale-value').textContent(),'200%');
+  await settings.evaluate(()=>{window.appState.geometry={fittedToWorkArea:true};window.stateCallback(window.appState);});
+  ok((await settings.locator('#scale-help').textContent()).includes('等比缩小'),true);ok(await settings.locator('#scale-value').textContent(),'200%');
+  await settings.evaluate(()=>{window.appState.geometry={fittedToWorkArea:false};window.stateCallback(window.appState);});
+  ok((await settings.locator('#scale-help').textContent()).includes('等比缩小'),false);
   for(const action of ['wave','jump','wait','review']){await settings.locator(`[data-action="${action}"]`).click();ok((await settings.evaluate(()=>window.calls)).includes(action),true);}
   for(const action of ['reset','hide','quit']){await settings.locator('#'+action).click();ok((await settings.evaluate(()=>window.calls)).includes(action),true);}
   await settings.evaluate(()=>{window.appState.trayAvailable=false;window.appState.persistenceError='failed';window.stateCallback(window.appState);});ok(await settings.locator('#hide').isDisabled(),true);ok(await settings.locator('#clickThrough').isDisabled(),true);ok((await settings.locator('#status').textContent()).includes('无法保存'),true);
@@ -117,6 +122,44 @@ try{
   await settings.locator('#releases').click();ok((await settings.locator('#status').textContent()).includes('未能完成'),true);ok(await settings.locator('#releases').isEnabled(),true);
   await settings.setViewportSize({width:350,height:740});
   ok(await settings.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  const studioPage=await browser.newPage({viewport:{width:240,height:260}});await setup(studioPage);studioPage.on('pageerror',e=>errors.push(e.message));
+  await studioPage.addInitScript(()=>{window.andromeda.onPublic=fn=>{window.publicCallback=fn;};window.appState.settings.motion='still';});
+  await studioPage.clock.install();await studioPage.goto(base+'/src/pet.html');await studioPage.locator('#pet[data-row="0"]').waitFor();
+  await studioPage.evaluate(()=>{window.appState.companion={preferences:{visualStyle:'studio',routine:false},mood:0,level:1};window.stateCallback(window.appState);});
+  await studioPage.locator('#studio-pose').waitFor({state:'visible'});
+  await studioPage.evaluate(()=>{window.studioDraws=0;const c=document.querySelector('#studio-pose').getContext('2d'),draw=c.drawImage;c.drawImage=function(...args){window.studioDraws++;return draw.apply(this,args);};});
+  await studioPage.evaluate(()=>{for(let n=0;n<20;n++)window.publicCallback(window.appState.companion);});
+  ok(await studioPage.evaluate(()=>window.studioDraws),0);
+  await studioPage.evaluate(()=>{window.appState.visible=false;window.stateCallback(window.appState);window.appState.companion.mood=20;window.publicCallback(window.appState.companion);});
+  await studioPage.clock.runFor(120000);ok(await studioPage.evaluate(()=>window.studioDraws),0);
+  await studioPage.evaluate(()=>{window.appState.visible=true;window.stateCallback(window.appState);});
+  ok(await studioPage.evaluate(()=>window.studioDraws),1);
+  await studioPage.evaluate(()=>{window.appState.companion.preferences.visualStyle='classic';window.appState.settings.motion='quiet';window.appState.companion.preferences.reducedMotion=true;window.stateCallback(window.appState);});
+  await studioPage.clock.runFor(120000);ok(await studioPage.locator('#pet').getAttribute('data-row'),'0');
+  ok(await studioPage.locator('#pet').getAttribute('data-column'),'0');
+  const resumePage=await browser.newPage({viewport:{width:240,height:260}});await setup(resumePage);resumePage.on('pageerror',e=>errors.push(e.message));
+  await resumePage.addInitScript(()=>{window.appState.settings.motion='still';window.andromeda.onEvent=fn=>{window.eventCallback=fn;};});
+  await resumePage.clock.install();await resumePage.goto(base+'/src/pet.html');await resumePage.locator('#pet[data-row="0"]').waitFor();
+  for(const mode of ['host','visibility']){
+    await resumePage.evaluate(mode=>window.eventCallback({id:'resume-'+mode,kind:'task',action:'greet',text:'恢复中的动作',priority:60}),mode);
+    await resumePage.clock.runFor(220);ok(await resumePage.locator('#pet').getAttribute('data-column'),'1');
+    await resumePage.evaluate(mode=>{
+      if(mode==='host'){window.appState.visible=false;window.stateCallback(window.appState);}
+      else{window.qaHidden=true;Object.defineProperty(document,'hidden',{configurable:true,get:()=>window.qaHidden});document.dispatchEvent(new Event('visibilitychange'));}
+    },mode);
+    const pausedFrame=await resumePage.locator('#pet').getAttribute('data-column');
+    await resumePage.clock.runFor(10000);ok(await resumePage.locator('#pet').getAttribute('data-column'),pausedFrame);
+    ok(await resumePage.locator('#bubble').isHidden(),true);ok(await resumePage.evaluate(()=>window.andromedaEnhancements.busy()),true);
+    await resumePage.evaluate(mode=>{
+      if(mode==='host'){window.appState.visible=true;window.stateCallback(window.appState);}
+      else{window.qaHidden=false;document.dispatchEvent(new Event('visibilitychange'));}
+    },mode);
+    ok(await resumePage.locator('#pet').getAttribute('data-row'),'3');ok(await resumePage.locator('#pet').getAttribute('data-column'),'0');
+    ok(await resumePage.locator('#bubble').textContent(),'恢复中的动作');ok(await resumePage.locator('#bubble').isVisible(),true);
+    await resumePage.clock.runFor(220);ok(await resumePage.locator('#pet').getAttribute('data-column'),'1');
+    await resumePage.clock.runFor(4000);ok(await resumePage.locator('#bubble').isHidden(),true);
+    ok(await resumePage.evaluate(()=>window.andromedaEnhancements.busy()),false);
+  }
   ok(errors,[]);
   console.log(`Browser renderer QA passed: ${checks} assertions. Screenshots: qa/pet-neutral.png, qa/pet-wave.png, qa/settings.png, qa/dock-left.png, qa/dock-top.png`);
 }finally{await browser.close();await new Promise(r=>server.close(r));}

@@ -81,6 +81,10 @@ async function createShell(t, {
     constructor(options) {
       super(); this.options = options; this.destroyed = false; this.visible = false; this.calls = [];
       this.bounds = { x: options.x || 0, y: options.y || 0, width: options.width, height: options.height };
+      if (nativeMinimumSize) {
+        this.bounds.width = Math.max(this.bounds.width, nativeMinimumSize.width);
+        this.bounds.height = Math.max(this.bounds.height, nativeMinimumSize.height);
+      }
       this.webContents = new EventEmitter();
       Object.assign(this.webContents, {
         mainFrame: { url: '' }, sent: [],
@@ -610,7 +614,7 @@ test('display removal, taskbar changes, and mixed DPI preserve visible DIP geome
   within(pet.getBounds(), shell.screen.primary.workArea);
 });
 
-test('undocking after a tiny work-area change restores the configured pet size', async (t) => {
+test('a tiny work area fits both docked and free pets proportionally and a larger screen restores scale', async (t) => {
   const shell = await createShell(t);
   const pet = shell.windows[0], size = petSize(DEFAULT_SETTINGS.scale);
   movePet(shell, 0, 300);
@@ -619,16 +623,19 @@ test('undocking after a tiny work-area change restores the configured pet size',
   shell.screen.emit('display-metrics-changed', {}, tinyDisplay, ['workArea']);
   within(pet.getBounds(), tinyDisplay.workArea);
   revealHandle(shell);
-  assert.deepEqual(pet.getBounds(), tinyDisplay.workArea, 'The expanded dock still fits the tiny work area');
+  assert.deepEqual(pet.getBounds(), {x: 0, y: 3, width: 160, height: 173}, 'The expanded dock fits without stretching its aspect ratio');
+  assert.deepEqual(shell.state().geometry, {requestedSize: size, displayedSize: {width: 160, height: 173}, fittedToWorkArea: true});
 
   shell.trays[0].emit('click');
   assert.equal(shell.state().dock, null);
-  assert.deepEqual(pet.getBounds(), {x: 0, y: 0, ...size}, 'A free pet uses its configured size and a clamped position');
+  assert.deepEqual(pet.getBounds(), {x: 0, y: 3, width: 160, height: 173}, 'Undocking retains the temporary fit until space permits the requested size');
   shell.screen.displays = [primary]; shell.screen.primary = primary;
   shell.screen.emit('display-metrics-changed', {}, primary, ['workArea']);
-  assert.deepEqual(pet.getBounds(), {x: 0, y: 0, ...size});
+  assert.deepEqual(pet.getBounds(), {x: 0, y: 3, ...size});
   within(pet.getBounds(), primary.workArea);
   assert.equal(shell.state().settings.scale, DEFAULT_SETTINGS.scale);
+  assert.equal(shell.state().geometry.fittedToWorkArea, false);
+  assert.equal(shell.saved().settings.scale, DEFAULT_SETTINGS.scale);
 });
 
 test('native minimum handle sizes stay on their dock edge through scaling and display changes', async (t) => {
@@ -664,12 +671,69 @@ test('a native window too large for the selected work area cancels docking safel
   const tinyDisplay = {...primary, workArea: {x: 0, y: 0, width: 20, height: 20}};
   const shell = await createShell(t, {displays: [tinyDisplay], nativeMinimumSize: {width: 30, height: 36}});
   const pet = shell.windows[0];
-  movePet(shell, -10, -10);
+  shell.screen.cursor = {x: 5, y: 5}; shell.send('start-drag');
+  shell.screen.cursor = {x: -10, y: -10}; shell.send('end-drag');
   assert.equal(shell.state().dock, null);
   assert.equal(pet.visible, true);
-  assert.deepEqual([pet.bounds.width, pet.bounds.height], [240, 260]);
+  assert.deepEqual([pet.bounds.width, pet.bounds.height], [30, 36], 'An impossible work area cannot override the native OS minimum');
   assert.deepEqual(pet.getPosition(), [0, 0]);
   assert.equal(shell.clock.intervals(), 0);
+});
+
+test('main fits startup and display changes across landscape, portrait, DPI and representative supported scales', async (t) => {
+  const small = {id: 1, scaleFactor: 2, workArea: {x: 0, y: 0, width: 640, height: 312}};
+  const shell = await createShell(t, {displays: [small], saved: {version: 1, settings: {...DEFAULT_SETTINGS, scale: 2, edgeDock: false}, position: {x: 1800, y: 900}}});
+  const pet = shell.windows[0];
+  assert.deepEqual([pet.bounds.width, pet.bounds.height], [288, 312]);
+  within(pet.getBounds(), small.workArea);
+  assert.equal(shell.state().settings.scale, 2);
+  for (const [physicalWidth, physicalHeight] of [[1280, 720], [1366, 768], [1920, 1080], [2560, 1440], [3840, 2160], [720, 1280], [1080, 1920], [1440, 2560]]) {
+    for (const scaleFactor of [1, 1.25, 1.5, 1.75, 2]) {
+      const display = {id: 1, scaleFactor, workArea: {x: -1600, y: -120, width: Math.floor(physicalWidth / scaleFactor), height: Math.floor(physicalHeight / scaleFactor) - 48}};
+      shell.screen.displays = [display]; shell.screen.primary = display;
+      shell.screen.emit('display-metrics-changed', {}, display, ['workArea', 'scaleFactor']);
+      for (const scale of [0.75, 1, 1.25, 1.5, 1.75, 2]) {
+        shell.invoke(pet, 'set-settings', {scale});
+        const bounds = pet.getBounds();
+        within(bounds, display.workArea);
+        assert.ok(Math.abs(bounds.width * 13 - bounds.height * 12) <= 12.5, `${physicalWidth}x${physicalHeight} DPI=${scaleFactor} scale=${scale}`);
+        assert.equal(shell.saved().settings.scale, scale);
+        assert.deepEqual(shell.state().geometry.displayedSize, {width: bounds.width, height: bounds.height});
+      }
+    }
+  }
+  shell.screen.displays = [primary]; shell.screen.primary = primary;
+  shell.screen.emit('display-metrics-changed', {}, primary, ['workArea', 'scaleFactor']);
+  assert.deepEqual(shell.state().geometry, {requestedSize: {width: 384, height: 416}, displayedSize: {width: 384, height: 416}, fittedToWorkArea: false});
+});
+
+test('crossing mixed-DPI monitors preserves the grabbed point and restores requested size without saving a smaller scale', async (t) => {
+  const small = {id: 2, scaleFactor: 2, workArea: {x: 1920, y: 0, width: 640, height: 312}};
+  const shell = await createShell(t, {displays: [primary, small], saved: {version: 1, settings: {...DEFAULT_SETTINGS, scale: 2, edgeDock: false}, position: {x: 1000, y: 200}}});
+  const pet = shell.windows[0], original = pet.getBounds();
+  shell.screen.cursor = {x: original.x + original.width / 2, y: original.y + original.height / 2};
+  shell.send('start-drag');
+  shell.screen.cursor = {x: 2240, y: 156}; shell.send('drag');
+  assert.deepEqual(pet.getBounds(), {x: 2096, y: 0, width: 288, height: 312});
+  assert.equal(pet.bounds.x + pet.bounds.width / 2, shell.screen.cursor.x);
+  assert.equal(pet.bounds.y + pet.bounds.height / 2, shell.screen.cursor.y);
+  shell.send('end-drag'); within(pet.getBounds(), small.workArea);
+  assert.equal(shell.saved().settings.scale, 2);
+  shell.screen.cursor = {x: 2240, y: 156}; shell.send('start-drag');
+  shell.screen.cursor = {x: 960, y: 520}; shell.send('end-drag'); // Include a release without a delivered drag tick.
+  assert.deepEqual(pet.getBounds(), {x: 768, y: 312, width: 384, height: 416});
+  assert.equal(shell.state().geometry.fittedToWorkArea, false);
+  assert.equal(shell.saved().settings.scale, 2);
+
+  shell.screen.primary = small;
+  shell.invoke(pet, 'reset-position');
+  within(pet.getBounds(), small.workArea);
+  assert.deepEqual([pet.bounds.width, pet.bounds.height], [288, 312]);
+  shell.screen.primary = primary; shell.screen.displays = [primary];
+  shell.screen.emit('display-removed', {}, small);
+  within(pet.getBounds(), primary.workArea);
+  assert.deepEqual([pet.bounds.width, pet.bounds.height], [384, 416]);
+  assert.equal(shell.saved().settings.scale, 2);
 });
 
 test('power pause reasons compose in either order and resume only when all reasons clear', async (t) => {

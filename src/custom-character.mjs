@@ -1,5 +1,5 @@
-import {validateCharacterPack, resolveAction} from './shared/character.mjs';
-import {cropRect, frameAt} from './animation.mjs';
+import {validateCharacterPack, createActionResolver} from './shared/character.mjs';
+import {cropRect, frameAt, containRect} from './animation.mjs';
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
@@ -7,6 +7,7 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
  * classic pet's gestures, menus, rhythm and visibility. No native API or network. */
 export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion = false, showAnchors = false}) {
   const character = validateCharacterPack(pack);
+  const resolve = createActionResolver(character);
   if (typeof reducedMotion !== 'boolean' || typeof showAnchors !== 'boolean') throw new TypeError('角色显示选项无效。');
   if (typeof imageDataURL !== 'string' || imageDataURL.length > 4 * Math.ceil(MAX_IMAGE_BYTES / 3) + 32
     || !/^data:image\/(?:png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(imageDataURL)
@@ -23,6 +24,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
   if (!validCanvas()) throw new TypeError('显示画布尺寸无效。');
   const motionQuery = win.matchMedia?.('(prefers-reduced-motion: reduce)');
   const reduced = () => reducedMotion || Boolean(motionQuery?.matches);
+  let effectiveReduced = reduced();
   const clock = () => win.performance.now();
   let image = new win.Image(), loaded = false, destroyed = false, timer = null, generation = 0;
   let pending = {kind: 'neutral'}, playing = false, current = null, startedAt = 0;
@@ -32,9 +34,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
   ready.catch(() => {});
 
   function layout() {
-    const scale = Math.min(canvas.width / character.atlas.cellWidth, canvas.height / character.atlas.cellHeight);
-    const width = character.atlas.cellWidth * scale, height = character.atlas.cellHeight * scale;
-    return {x: (canvas.width - width) / 2, y: canvas.height - height, width, height};
+    return containRect(character.atlas.cellWidth, character.atlas.cellHeight, canvas.width, canvas.height);
   }
   function anchors() {
     const area = layout();
@@ -44,6 +44,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
   }
   function paint(row, column) {
     if (!loaded || destroyed || !validCanvas()) return false;
+    if (current?.row === row && current.column === column && current.width === canvas.width && current.height === canvas.height) return true;
     if (mask.width !== canvas.width || mask.height !== canvas.height) {mask.width = canvas.width; mask.height = canvas.height;}
     const area = layout();
     maskContext.clearRect(0, 0, mask.width, mask.height);
@@ -57,7 +58,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
         context.fillText(name, Math.min(canvas.width - 46, Math.max(0, point.x + 5)), Math.max(10, point.y - 5));
       }
     }
-    context.restore();current = {row, column};return true;
+    context.restore();current = {row, column, width: canvas.width, height: canvas.height};return true;
   }
   function stop() {
     generation++;win.clearTimeout(timer);timer = null;playing = false;pending = null;
@@ -77,7 +78,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
   }
   function draw(semantic) {
     if (destroyed) return null;
-    const clip = resolveAction(character, semantic, {reducedMotion: reduced()});
+    const clip = resolve(semantic, {reducedMotion: reduced()});
     stop();pending = {kind: 'semantic', semantic};
     if (loaded) {
       if (clip.static || doc.hidden) paint(clip.row, clip.column);
@@ -103,6 +104,9 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
     if (typeof value !== 'boolean') throw new TypeError('减少动画选项无效。');
     if (destroyed) return;
     reducedMotion = value;
+    const next = reduced();
+    if (next === effectiveReduced) return;
+    effectiveReduced = next;
     // A preference change never resumes an action previously stopped by the user.
     if (reduced()) {const semantic = pending?.kind === 'semantic' ? pending.semantic : null;semantic ? draw(semantic) : neutral();}
   }
@@ -113,7 +117,7 @@ export function createCustomCharacter({canvas, pack, imageDataURL, reducedMotion
     try {return maskContext.getImageData(Math.floor(x), Math.floor(y), 1, 1).data[3] > 16;} catch {return false;}
   }
   const onVisibility = () => {if (doc.hidden) neutral();};
-  const onMotion = () => {if (reduced()) setReducedMotion(reducedMotion);};
+  const onMotion = () => setReducedMotion(reducedMotion);
   doc.addEventListener('visibilitychange', onVisibility);
   motionQuery?.addEventListener?.('change', onMotion);
   image.onload = () => {

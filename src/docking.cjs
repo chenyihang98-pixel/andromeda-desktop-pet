@@ -1,5 +1,7 @@
 'use strict';
 
+const { fitSizeToArea } = require('./settings.cjs');
+
 // Electron screen coordinates, work areas and BrowserWindow bounds are already
 // device-independent pixels. Never multiply these values by display.scaleFactor.
 const DOCK_THRESHOLD = 18;
@@ -178,7 +180,7 @@ function dockBounds(dock, size, displays) {
   const candidate = displaysWithAreas(displays).find((display) => display.id === cleanDock.displayId);
   if (!candidate) return null; // A removed display must be handled by the caller.
   const { area } = candidate;
-  const expanded = anchoredBounds(area, cleanSize, cleanDock.edge, cleanDock.ratio);
+  const expanded = anchoredBounds(area, fitSizeToArea(cleanSize, area), cleanDock.edge, cleanDock.ratio);
   const vertical = cleanDock.edge === 'left' || cleanDock.edge === 'right';
   const collapsed = anchoredBounds(area, vertical ? { width: 14, height: 64 } : { width: 64, height: 14 }, cleanDock.edge, cleanDock.ratio);
   // Keep the handle centered beside the expanded pet, clamped at corners.

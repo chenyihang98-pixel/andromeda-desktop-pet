@@ -1,6 +1,7 @@
 'use strict';
 const {createHash}=require('node:crypto');
 const MAX_BYTES=12*1024*1024;
+const MAX_MANIFEST_BYTES=65536;
 const table=Uint32Array.from({length:256},(_,n)=>{for(let k=0;k<8;k++)n=(n&1)?0xedb88320^(n>>>1):n>>>1;return n>>>0;});
 function crc32(bytes){let crc=0xffffffff;for(const byte of bytes)crc=table[(crc^byte)&255]^(crc>>>8);return(crc^0xffffffff)>>>0;}
 // Stored ZIP entries keep export deterministic and avoid external archiver/runtime dependencies.
@@ -21,11 +22,14 @@ async function checked(pack,bytes,{verifyHash=false}={}){
   return{pack:clean,image:Buffer.from(bytes),mime:info.mime,filename};
 }
 async function createCharacterArchive(input,{originalImage}={}){
-  if(!input||typeof input!=='object'||Object.keys(input).some(key=>!['pack','imageDataURL'].includes(key))||JSON.stringify(input.pack).length>65536)throw new TypeError('角色包输入无效');
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!['pack','imageDataURL'].includes(key)))throw new TypeError('角色包输入无效');
   let bytes=originalImage;
   if(input.imageDataURL!==undefined){if(typeof input.imageDataURL!=='string'||input.imageDataURL.length>11_200_000||!/^data:image\/(png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(input.imageDataURL))throw new TypeError('仅接受本地 PNG/WebP 图像');bytes=Buffer.from(input.imageDataURL.slice(input.imageDataURL.indexOf(',')+1),'base64');}
   if(!Buffer.isBuffer(bytes))throw new TypeError('请先导入角色图片');
-  const result=await checked(input.pack,bytes),manifest=Buffer.from(JSON.stringify(result.pack,null,2)+'\n');
+  // Export exactly the bounded representation the importer accepts. Metadata
+  // normalization and UTF-8 encoding can both change the original input size.
+  const result=await checked(input.pack,bytes),manifest=Buffer.from(JSON.stringify(result.pack)+'\n');
+  if(manifest.length>MAX_MANIFEST_BYTES)throw new TypeError('角色包元数据不能超过 64 KiB，请减少动作或文字内容');
   const archive=zip([['manifest.json',manifest],[result.filename,result.image],['README.txt',Buffer.from('Andromeda character pack v1\nIncludes validated metadata and original PNG/WebP artwork.\nImport this ZIP in the desktop Appearance panel or unzip for the website SDK assetBase.\nRights and provenance are recorded in manifest.json. No executable code.\n')]]);
   return{...result,archive};
 }
@@ -43,7 +47,7 @@ async function readCharacterArchive(bytes){
     entries.set(name,content);offset=end;
   }
   const eocd=bytes.length-22;
-  if(entries.size!==3||!entries.has('manifest.json')||entries.get('manifest.json').length>65536||!entries.has('README.txt')||bytes.readUInt32LE(eocd)!==0x06054b50||bytes.readUInt32LE(eocd+16)!==offset||bytes.readUInt16LE(eocd+10)!==3
+  if(entries.size!==3||!entries.has('manifest.json')||entries.get('manifest.json').length>MAX_MANIFEST_BYTES||!entries.has('README.txt')||bytes.readUInt32LE(eocd)!==0x06054b50||bytes.readUInt32LE(eocd+16)!==offset||bytes.readUInt16LE(eocd+10)!==3
     ||bytes.readUInt16LE(eocd+4)!==0||bytes.readUInt16LE(eocd+6)!==0||bytes.readUInt16LE(eocd+8)!==3||bytes.readUInt16LE(eocd+20)!==0)throw new TypeError('角色 ZIP 目录无效');
   if(offset+bytes.readUInt32LE(eocd+12)!==eocd)throw new TypeError('角色 ZIP 目录不完整');
   // Standard unzip tools use this directory, so it must describe exactly the same

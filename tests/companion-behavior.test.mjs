@@ -5,6 +5,19 @@ import { createBehaviorScheduler } from '../src/shared/behavior.mjs';
 function fixture() { let time = 1000; return { scheduler: createBehaviorScheduler({ now: () => time }), advance: amount => { time += amount; } }; }
 const action = (id, name, priority, durationMs = 1000, extra = {}) => ({ id, action: name, priority, durationMs, ...extra });
 
+test('next wakeup follows completion, cooldown and suspension without polling or mutation', () => {
+  const {scheduler, advance} = fixture();assert.equal(scheduler.nextDelay(), null);assert.equal(scheduler.isActive(), false);
+  scheduler.enqueue(action('a', 'pet', 80, 100));assert.equal(scheduler.isActive(), true);assert.equal(scheduler.nextDelay(), 100);
+  advance(30);const before=scheduler.snapshot();assert.equal(scheduler.nextDelay(),70);assert.deepEqual(scheduler.snapshot(),before);
+  scheduler.enqueue(action('b', 'pet', 80, 100));advance(70);scheduler.tick();
+  assert.equal(scheduler.nextDelay(),1400);assert.equal(scheduler.isActive(),false);
+  scheduler.setContext({hidden:true});advance(10000);assert.equal(scheduler.nextDelay(),null);
+  scheduler.setContext({hidden:false});assert.equal(scheduler.nextDelay(),100);
+  scheduler.setContext({dragging:true});advance(9000);assert.equal(scheduler.nextDelay(),null);
+  scheduler.setContext({dragging:false});assert.equal(scheduler.nextDelay(),100);
+  advance(100);assert.equal(scheduler.nextDelay(),1);scheduler.tick();assert.equal(scheduler.nextDelay(),null);
+});
+
 test('manual action preempts low priority, then resumes remaining time instead of replaying it', () => {
   const { scheduler, advance } = fixture();
   scheduler.enqueue(action('idle-1', 'idle', 10, 2000)); advance(500);

@@ -10,7 +10,7 @@
 2. 完整解压到一个新文件夹，再打开 `Andromeda.exe`，不用安装 Node.js
 3. 如果正在使用旧版，先退出，再打开新版本；原来的设置可以沿用
 
-当前源码为 **0.3.0 开发版**，新增陪伴空间和网站 SDK；上述 v0.2.0 下载不包含这些功能。完整进度及未完成范围见 [54 项实施核对表](docs/IMPLEMENTATION-STATUS.md)。源码推送、打包与公开发行分别记录，不以新版本号代替发布。
+当前源码为 **0.3.1 开发版**，包含陪伴空间、网站 SDK 及资源优化；上述 v0.2.0 下载不包含这些功能。完整进度及未完成范围见 [54 项实施核对表](docs/IMPLEMENTATION-STATUS.md)，本轮结果见 [资源与代码审查](docs/PERFORMANCE-0.3.1.md)。源码推送、打包与公开发行分别记录，不以新版本号代替发布。
 
 适用于 Windows 10/11 x64。目前是未签名的开发版，可能出现 SmartScreen 提示；请核对下载来源和随包的 SHA-256，不要关闭系统安全防护。
 
@@ -67,6 +67,8 @@ npm run pack:assets
 ```
 
 `build:win` 会生成 Windows x64 ZIP 和 `dist/SHA256SUMS.txt`，不会自动发布。`pack:assets` 用于准备独立角色素材。构建保留中文、英文语言资源和运行时许可证；不同机器生成的 ZIP 不保证逐字节相同。
+
+`npm run profile:resources -- --label=current --seconds=20` 在隔离的 QA 资料目录运行实际 Electron，记录静止、面板、Studio、专注和隐藏时的进程 CPU、内存、IPC、重绘与存档次数。加 `--actions` 可测试合成大存档下的互动和漫游；不会读取主人资料。桌宠仍使用 Electron 多进程运行时，优化不能把完整应用当作几 MB 的小挂件。
 
 Windows 上的 `npm start` 会先编译本地全屏检测组件；打包也会编译并附带该组件。已打包程序使用附带组件，不会在用户电脑上下载或编译代码。当前 Windows 打包必须在 Windows 上进行，从 Linux 交叉构建会明确报错。
 

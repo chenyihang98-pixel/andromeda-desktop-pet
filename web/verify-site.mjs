@@ -63,6 +63,20 @@ try {
   equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.getByRole('button', {name: '关闭向导面板'}).click(); equal(await avoidsControls(page), true);
   await page.locator('[data-download]').last().scrollIntoViewIfNeeded(); await page.waitForTimeout(150); equal(await avoidsControls(page), true);
+  // A reduced-motion preview must remain draggable even without an idle render loop.
+  await page.setViewportSize({width: 1440, height: 1000}); await page.emulateMedia({reducedMotion: 'reduce'});
+  await page.goto(base + '/tools/xingxuan/'); await page.locator('[data-model].is-ready').first().waitFor();
+  const model = page.locator('[data-model] canvas').first(); await model.scrollIntoViewIfNeeded(); await page.waitForTimeout(100);
+  const before = await model.screenshot(), box = await model.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 20, {steps: 8}); await page.mouse.up();
+  equal(before.equals(await model.screenshot()), false);
+  // Import/loading can finish after pagehide: neither companion nor 3D/demos may reappear.
+  const late = await browser.newPage({viewport: {width: 1440, height: 1000}});
+  let release, started; const gate = new Promise(done => { release = done; }), requested = new Promise(done => { started = done; });
+  await late.route('**/andromeda/web/andromeda.mjs', async route => { started(); await gate; await route.continue(); });
+  await late.goto(base + '/', {waitUntil: 'domcontentloaded'}); await requested;
+  await late.evaluate(() => dispatchEvent(new PageTransitionEvent('pagehide', {persisted: false}))); release();
+  await late.waitForTimeout(700); equal(await late.locator('[data-andromeda],[data-sprite-demo] canvas,[data-model] canvas').count(), 0); await late.close();
   equal(errors, []); equal(failed.filter(url => !url.endsWith('/favicon.ico')), []);
   console.log(`Starwright local integration QA passed: ${checks} assertions across six pages. No remote writes.`);
 } finally { if (browser) await browser.close(); await new Promise(done => server.close(done)); }

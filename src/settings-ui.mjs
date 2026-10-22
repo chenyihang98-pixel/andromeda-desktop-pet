@@ -12,6 +12,9 @@ function render(next) {
   document.querySelectorAll('[data-motion]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.motion === next.settings.motion)));
   document.querySelector('#scale').value = next.settings.scale;
   document.querySelector('#scale-value').textContent = Math.round(next.settings.scale * 100) + '%';
+  document.querySelector('#scale-help').textContent = next.geometry?.fittedToWorkArea
+    ? '屏幕空间较小，已等比缩小；缩放设置仍保留，移到更大屏幕后恢复'
+    : '拖住星璇即可移动；双击角色可打开此面板';
   for (const key of toggleKeys) document.querySelector('#' + key).checked = Boolean(next.settings[key]);
   document.querySelector('#version').textContent = 'ANDROMEDA · ' + (next.version || '0.2.0');
   document.querySelector('#hide').disabled = !next.trayAvailable;

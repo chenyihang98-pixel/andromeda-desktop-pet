@@ -38,6 +38,56 @@ function sendTask(bridge, body, token = bridge.token) {
   });
 }
 
+function controlledClock() {
+  let time = Date.UTC(2026, 9, 22, 3), serial = 0;
+  const pending = new Map();
+  return {
+    now: () => time,
+    setTimer: (callback, delay) => {const id = ++serial;pending.set(id, {at: time + delay, callback});return id;},
+    clearTimer: id => pending.delete(id),
+    get pending() {return pending.size;},
+    advance(milliseconds) {
+      const target = time + milliseconds;let limit = 1000;
+      while (--limit) {
+        const next = [...pending].filter(([, entry]) => entry.at <= target).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) break;time = next[1].at;pending.delete(next[0]);next[1].callback();
+      }
+      assert.ok(limit, 'scheduler must not busy loop');time = target;
+    },
+  };
+}
+
+test('deadline scheduler checkpoints active focus, saves muted due cards and has no idle heartbeat', async t => {
+  const clock = controlledClock(), {host, directory, publications, events} = await fixture(t, clock);await host.ready;
+  await host.dispatch({type: 'preferences.update', patch: {routine: false, remindersMuted: true}});
+  assert.equal(clock.pending, 0);const idleCount = publications.length;clock.advance(60_000);assert.equal(publications.length, idleCount);
+  await host.dispatch({type: 'todo.add', text: 'silent due', dueAt: clock.now() + 5000});
+  clock.advance(5000);
+  let saved = JSON.parse(await fs.readFile(path.join(directory, 'companion-v1.json'), 'utf8'));
+  assert.equal(saved.notifications.length, 1);assert.equal(events.filter(event => event.kind === 'todo.due').length, 0);
+  await host.dispatch({type: 'focus.start', durationMinutes: 1});
+  const focusCount = publications.length;clock.advance(14_000);assert.equal(publications.length, focusCount);
+  clock.advance(1000);saved = JSON.parse(await fs.readFile(path.join(directory, 'companion-v1.json'), 'utf8'));assert.equal(saved.focus.remainingMs, 45_000);
+  clock.advance(45_000);const completed = (await host.state()).companion;assert.equal(completed.focus.status, 'completed');assert.equal(completed.progression.xp, 2);
+  saved = JSON.parse(await fs.readFile(path.join(directory, 'companion-v1.json'), 'utf8'));assert.equal(saved.focus.status, 'completed');assert.equal(saved.progression.xp, 2);
+  clock.advance(60_000);assert.equal((await host.state()).companion.progression.xp, 2);
+  host.stop();assert.equal(clock.pending, 0);const stoppedCount = publications.length;clock.advance(3_600_000);assert.equal(publications.length, stoppedCount);
+});
+
+test('failed persistence schedules a bounded retry and recovers without an idle busy loop', async t => {
+  const clock = controlledClock(), {host, directory, publications} = await fixture(t, clock);await host.ready;
+  await host.dispatch({type: 'preferences.update', patch: {routine: false}});
+  const filename = path.join(directory, 'companion-v1.json');
+  await fs.unlink(filename);await fs.mkdir(filename);
+  const result = await host.dispatch({type: 'memory.add', text: 'must survive failed write'});
+  assert.ok(result.persistenceError);assert.equal(clock.pending, 1);
+  const before = publications.length;clock.advance(29_999);assert.equal(publications.length, before);
+  clock.advance(1);assert.equal(publications.length, before + 1);assert.equal(clock.pending, 1);
+  await fs.rmdir(filename);clock.advance(30_000);
+  const saved = JSON.parse(await fs.readFile(filename, 'utf8'));assert.equal(saved.memories[0].text, 'must survive failed write');
+  assert.equal((await host.state()).persistenceError, null);assert.equal(clock.pending, 0);
+});
+
 test('real host loads the ESM domain, persists commands and exports without assistant credentials', async t => {
   const { host, directory } = await fixture(t); await host.ready;
   assert.equal((await host.state()).companion.scope, 'owner');
@@ -97,22 +147,20 @@ test('saving a running focus and reopening the host restores paused without offl
   } finally { second.stop(); }
 });
 
-test('real interval publishes while alive and stops publishing after stop', async t => {
-  const { host, publications } = await fixture(t); await host.ready;
-  const start = publications.length; await delay(1150);
-  assert.ok(publications.length > start);
-  host.stop(); await new Promise(resolve => setImmediate(resolve));
-  const stopped = publications.length; await delay(1150);
-  assert.equal(publications.length, stopped);
+test('idle host has no heartbeat publication; a real deadline wakes once and stop cancels future work', async t => {
+  const { host, publications, events } = await fixture(t); await host.ready;
+  await host.dispatch({type: 'preferences.update', patch: {routine: false}});
+  const start = publications.length;await delay(150);assert.equal(publications.length, start);
+  await host.dispatch({type: 'todo.add', text: 'real deadline', dueAt: Date.now() + 100});
+  await delay(250);assert.equal(events.filter(event => event.kind === 'todo.due').length, 1);
+  await host.dispatch({type: 'todo.add', text: 'cancelled timer', dueAt: Date.now() + 100});
+  host.stop();const stopped = publications.length;await delay(200);assert.equal(publications.length, stopped);
 });
 
-test('stop before asynchronous ready cannot create a late interval', async t => {
-  const original = global.setInterval; const created = [];
-  global.setInterval = (...args) => { const timer = original(...args); created.push(timer); return timer; };
-  try {
-    const { host } = await fixture(t); host.stop(); await host.ready;
-    assert.equal(created.length, 0);
-  } finally { global.setInterval = original; for (const timer of created) clearInterval(timer); }
+test('stop before asynchronous ready cannot create a late timer', async t => {
+  const created = [];
+  const {host} = await fixture(t, {setTimer: (...args) => {created.push(args);return 1;}, clearTimer: () => {}});
+  host.stop();await host.ready;assert.equal(created.length, 0);
 });
 
 test('task bridge defaults off, accepts authenticated status only and rotates tokens after stop/start', async t => {

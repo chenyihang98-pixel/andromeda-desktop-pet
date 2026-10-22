@@ -117,5 +117,15 @@ export function createBehaviorScheduler({ now = Date.now, maxQueue = 32, cooldow
     if (active && (kind === undefined || active.event.kind === kind)) active = null;
     return snapshot();
   }
-  return Object.freeze({ enqueue, tick, setContext, complete, clear, snapshot });
+  // The host animates frames separately. Only action completion or an eligible
+  // cooldown can change this queue without external input; no polling is needed.
+  function nextDelay() {
+    if (suppressed()) return null;
+    const time = clock();
+    if (active) return Math.max(1, active.remainingMs - Math.max(0, time - active.updatedAt));
+    if (!queue.length) return null;
+    return Math.max(1, Math.min(...queue.map(item => item.resuming ? 0
+      : (played.get(item.event.action) ?? -Infinity) + (limits[item.event.action] ?? 2000) - time)));
+  }
+  return Object.freeze({ enqueue, tick, setContext, complete, clear, snapshot, nextDelay, isActive: () => active !== null });
 }

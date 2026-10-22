@@ -25,4 +25,7 @@ body:hover #companion-button,#companion-button:focus-visible{opacity:1}
 body.studio-mode #pet{opacity:0}body.collapsed #studio-pose,body.collapsed #bubble,body.collapsed #companion-button{display:none}
 body[data-theme=dawn] #bubble{background:#f2ebd9f5;color:#3c4155;border-color:#c9bdb1}body[data-theme=festive] #bubble{border-color:#d5b86e;background:#29223af5}
 #growth-adornment{position:absolute;top:2%;left:50%;transform:translateX(-50%);color:#f1d58f;font-size:12px;text-shadow:0 0 5px #32220a;pointer-events:none;white-space:nowrap}body.collapsed #growth-adornment{display:none}
-#pet,#studio-pose{transform:translateY(var(--rhythm-y,0px))}@media(prefers-reduced-motion:reduce){#pet,#studio-pose{transform:none}}
+/* Keep the drawing surfaces proportional even when a window manager imposes
+   rounded/minimum bounds. Pointer coordinates use the actual canvas rectangle. */
+#pet,#studio-pose{position:absolute;inset:auto auto 0 50%;width:min(100vw,calc(100vh * 12 / 13));height:auto;aspect-ratio:12/13;transform:translateX(-50%) translateY(var(--rhythm-y,0px))}
+@media(prefers-reduced-motion:reduce){#pet,#studio-pose{transform:translateX(-50%)}}

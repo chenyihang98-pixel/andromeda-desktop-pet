@@ -1,8 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {frameAt, neutralDelay, gazeCell, cropRect, ACTIONS} from '../src/animation.mjs';
+import {frameAt, neutralDelay, gazeCell, cropRect, ACTIONS, containRect} from '../src/animation.mjs';
 const manifest = JSON.parse(readFileSync(new URL('../assets/manifest.json', import.meta.url)));
+
+test('drawing preserves aspect ratio for fractional Studio cells, custom portraits and constrained windows', () => {
+  for(const [sw,sh] of [[192,208],[313.5,418],[32,80],[1000,100]]) {
+    for(const [tw,th] of [[144,156],[384,416],[384,312],[160,280],[128,64]]) {
+      const rect=containRect(sw,sh,tw,th);
+      assert.ok(Math.abs(rect.width/rect.height-sw/sh)<1e-10);
+      assert.ok(rect.x>=-1e-10&&rect.y>=-1e-10&&rect.x+rect.width<=tw+1e-10&&rect.y+rect.height<=th+1e-10);
+      assert.ok(Math.abs(rect.y+rect.height-th)<1e-10);
+    }
+  }
+  assert.deepEqual(containRect(313.5,418,384,416),{x:36,y:0,width:312,height:416});
+  for(const value of [0,-1,NaN,Infinity])assert.throws(()=>containRect(value,1,1,1));
+});
 test('nine states preserve exact geometry and 57 standard frames', () => {
   assert.equal(Object.keys(manifest.animations).length, 9);
   assert.equal(Object.values(manifest.animations).reduce((n,a) => n + a.frameCount,0),57);

@@ -54,3 +54,36 @@ test('ZIP import verifies recorded image SHA-256 independently from ZIP checksum
   checksum=(checksum^0xffffffff)>>>0;bytes.writeUInt32LE(checksum,14);bytes.writeUInt32LE(checksum,central+16);
   await assert.rejects(readCharacterArchive(bytes),/哈希校验/);
 });
+function densePack(pack, nameLength=0){
+  pack.atlas.columns=64;pack.atlas.cellWidth=pack.atlas.width/64;pack.atlas.rows=1;pack.atlas.cellHeight=pack.atlas.height;
+  pack.neutral={row:0,column:0};delete pack.lookDirections;
+  const names=Array.from({length:128},(_,index)=>('a'+index).padEnd(nameLength,'x'));
+  pack.actions={idle:names[0]};pack.animations=Object.fromEntries(names.map(name=>[name,{row:0,frameCount:64,durationsMs:Array(64).fill(60000)}]));
+  return pack;
+}
+test('large legal action tables export a bounded compact manifest that the importer accepts',async()=>{
+  const {pack,image}=await fixture();densePack(pack);
+  assert.ok(Buffer.byteLength(JSON.stringify(pack,null,2))>65536);
+  const result=await createCharacterArchive({pack},{originalImage:image});
+  assert.ok(result.archive.readUInt32LE(18)<=65536);
+  assert.deepEqual((await readCharacterArchive(result.archive)).pack,result.pack);
+});
+test('metadata limit uses final normalized UTF-8 bytes and accepts the exact byte boundary',async()=>{
+  const {pack,image}=await fixture();densePack(pack,48);
+  pack.description='汉'.repeat(1000);pack.source.author='汉'.repeat(200);pack.source.license='汉'.repeat(200);pack.source.reference='汉'.repeat(500);
+  assert.ok(JSON.stringify(pack).length<65536);
+  assert.ok(Buffer.byteLength(JSON.stringify(pack))>65536);
+  await assert.rejects(createCharacterArchive({pack},{originalImage:image}),/64 KiB/);
+  // Keep the metadata shape fixed and fill within the validated description bound.
+  pack.source.author='作者';pack.source.license='许可';pack.source.reference='汉'.repeat(300);
+  pack.description='x';
+  const base=await createCharacterArchive({pack},{originalImage:image});
+  const currentBytes=base.archive.readUInt32LE(18);
+  const missing=65536-currentBytes;
+  assert.ok(missing>0&&missing<=2997);
+  const full=Math.floor(missing/3),remainder=missing%3;
+  pack.description='x'+'汉'.repeat(full)+'x'.repeat(remainder);
+  const boundary=await createCharacterArchive({pack},{originalImage:image});assert.equal(boundary.archive.readUInt32LE(18),65536);
+  assert.deepEqual((await readCharacterArchive(boundary.archive)).pack,boundary.pack);
+  pack.description+='x';await assert.rejects(createCharacterArchive({pack},{originalImage:image}),/64 KiB/);
+});

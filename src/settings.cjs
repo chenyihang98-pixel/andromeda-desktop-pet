@@ -80,17 +80,30 @@ function sanitizeRecord(value) {
   };
 }
 
-function petSize(scale) {
+function petSize(scale, display) {
   const safeScale = sanitizeSettings({ scale }).scale;
-  return { width: Math.round(BASE_SIZE.width * safeScale), height: Math.round(BASE_SIZE.height * safeScale) };
+  return fitSizeToArea({ width: Math.round(BASE_SIZE.width * safeScale), height: Math.round(BASE_SIZE.height * safeScale) }, display);
 }
 
 function workAreas(displays) {
-  return displays.map((display) => display.workArea || display).filter((area) => (
+  return displays.map((display) => display?.workArea || display).filter((area) => (
     area && Number.isFinite(area.x) && Number.isFinite(area.y)
     && Number.isFinite(area.width) && area.width > 0
     && Number.isFinite(area.height) && area.height > 0
-  ));
+  )).map((area) => {
+    // Native window bounds are integral DIP; round inward at fractional edges.
+    const x = Math.ceil(area.x), y = Math.ceil(area.y);
+    return { x, y, width: Math.floor(area.x + area.width) - x, height: Math.floor(area.y + area.height) - y };
+  }).filter((area) => area.width >= 1 && area.height >= 1);
+}
+
+// The configured scale remains the user's intent. A small current work area
+// only limits the displayed dimensions; a larger display restores that scale.
+// Electron's workArea is already DIP, regardless of display.scaleFactor.
+function fitSizeToArea(size, display) {
+  const area = workAreas([display])[0];
+  const factor = area ? Math.min(1, area.width / size.width, area.height / size.height) : 1;
+  return { width: Math.max(1, Math.round(size.width * factor)), height: Math.max(1, Math.round(size.height * factor)) };
 }
 
 function clampToArea(position, size, area) {
@@ -173,5 +186,5 @@ function createSettingsStore(directory) {
 module.exports = {
   BASE_SIZE, DEFAULT_SETTINGS, MIN_SCALE, MAX_SCALE, MOTIONS,
   sanitizeSettings, validateSettingsPatch, sanitizePosition, sanitizeRecord,
-  petSize, defaultPosition, clampPosition, createSettingsStore,
+  petSize, fitSizeToArea, defaultPosition, clampPosition, createSettingsStore,
 };
