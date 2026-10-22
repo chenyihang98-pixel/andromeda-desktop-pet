@@ -1,6 +1,14 @@
 # Andromeda: continuation brief for Codex
 
-## Scope and starting point
+## Current continuation point: 0.3.0, 2026-10-22
+
+The source now includes the desktop companion workspace, optional assistant/voice/tools, local backup restoration, bounded task bridge and CLI adapter, movement/music, visible progression, custom character ZIP editor/importer, and a shared website SDK. Read `IMPLEMENTATION-STATUS.md` for all 54 items and `VALIDATION-0.3.0.md` for actual evidence. Twenty items have their documented baseline loop complete; many extensions and production conditions remain incomplete. Do not call the entire roadmap complete.
+
+The website integration belongs to the existing website source and a separate feature branch; do not replace the site with a new project. The public v0.2.0 release remains unchanged. Source push, local build, Release creation and website deployment are separate actions. Preserve the original atlas hash and the user's files. New Studio sheets are static references and are not complete continuous animations. The owner authorized implementing and pushing this work; do not let the historical scope below override that later instruction.
+
+The sections below are the historical v0.2.0 handoff and remaining device/distribution considerations. Version and capability statements in those historical sections are not current 0.3.0 claims.
+
+## Historical scope and starting point
 
 Repository: https://github.com/chenyihang98-pixel/andromeda-desktop-pet
 

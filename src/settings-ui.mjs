@@ -1,4 +1,5 @@
 const api = window.andromeda;
+document.querySelector('#open-companion')?.addEventListener('click', () => { void invoke('showCompanion'); });
 const status = document.querySelector('#status');
 const toggleKeys = ['alwaysOnTop', 'gaze', 'edgeDock', 'globalGaze', 'clickThrough', 'autoHideFullscreen'];
 let state, latestPatch = 0;
@@ -69,7 +70,7 @@ releasesButton.addEventListener('click', async () => {
   releasesButton.disabled = true;
   try {
     if (await invoke('openReleases')) {
-      status.textContent = '已在默认浏览器打开版本发布页，请对照当前版本 0.2.0 手动查看';
+      status.textContent = '已在默认浏览器打开版本发布页，请对照当前版本 ' + (state?.version || '未知') + ' 手动查看';
       status.classList.remove('error');
     }
   } finally { releasesButton.disabled = false; }

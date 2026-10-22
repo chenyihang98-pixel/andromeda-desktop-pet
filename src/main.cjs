@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, protocol, dialog, powerMonitor, shell } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, protocol, dialog, powerMonitor, shell, safeStorage, desktopCapturer } = require('electron');
 const fs = require('node:fs/promises');
 const { mkdirSync, existsSync } = require('node:fs');
 const path = require('node:path');
@@ -10,6 +10,11 @@ const {
 const { dockAt, dockBounds, hitTest, HIDE_DELAY } = require('./docking.cjs');
 const { applyDockWindowBounds } = require('./dock-window.cjs');
 const { createFullscreenMonitor } = require('./fullscreen-monitor.cjs');
+const { createCompanionHost } = require('./companion-host.cjs');
+const {createMotionState, setMotionMode, syncMotionBounds, throwMotion, stepMotion} = require('./motion.cjs');
+const {createShortcutStore} = require('./services/shortcuts.cjs');
+const {SCHEME:DEEP_LINK_SCHEME,parseDeepLink}=require('./deep-link.cjs');
+const {createCharacterStore}=require('./services/character-store.cjs');
 
 const RELEASES_URL = 'https://github.com/chenyihang98-pixel/andromeda-desktop-pet/releases';
 const VERSION = require('../package.json').version;
@@ -17,6 +22,8 @@ const APP_NAME = '星璇（Andromeda）桌宠';
 const ROOT = path.resolve(__dirname, '..');
 const PET_URL = 'andromeda://app/src/pet.html';
 const SETTINGS_URL = 'andromeda://app/src/settings.html';
+const COMPANION_URL = 'andromeda://app/src/companion.html';
+const LINKS = Object.freeze({home: 'https://starwright.xyz/', xingxuan: 'https://starwright.xyz/tools/xingxuan/', modelwright: 'https://starwright.xyz/tools/modelwright/', releases: RELEASES_URL});
 const ICON_PATH = path.join(ROOT, 'assets', 'icon.png');
 const FULLSCREEN_HELPER = app.isPackaged
   ? path.join(process.resourcesPath, 'native', 'windows-fullscreen.exe')
@@ -49,6 +56,14 @@ protocol.registerSchemesAsPrivileged([{
 
 let petWindow = null;
 let settingsWindow = null;
+let companionWindow = null;
+let companionHost = null;
+let shortcutStore = null;
+let characterStore = null, characterReady;
+let voiceAllowedUntil = 0;
+let movementTimer = null, movementState = null, movementTime = 0, movementActionAt = 0;
+let rhythmAt = 0;
+let pendingDeepLink = null;
 let tray = null;
 let quitting = false;
 let store;
@@ -67,6 +82,10 @@ let fullscreenMonitor = null;
 let fullscreenSnapshot = null;
 let fullscreenError = null;
 const pauses = new Set();
+function validateCharacterImage(value){
+  const decoded=nativeImage.createFromBuffer(value.image),size=decoded.getSize();
+  if(decoded.isEmpty()||size.width!==value.pack.atlas.width||size.height!==value.pack.atlas.height)throw new Error('角色图片无法解码或尺寸不符');
+}
 
 function paused() { return pauses.size > 0; }
 function fullscreenWanted() {
@@ -157,10 +176,33 @@ function applyClickThrough() {
 }
 
 function updateDesktopTimer() {
+  updateMovement();
   const needed = !quitting && !paused() && isAlive(petWindow) && petWindow.isVisible()
     && Boolean(dock || preferences.settings.globalGaze || clickThroughActive);
   if (needed && !desktopTimer) desktopTimer = setInterval(pollDesktop, 100);
   if (!needed && desktopTimer) { clearInterval(desktopTimer); desktopTimer = null; }
+}
+
+function updateMovement() {
+  const state = companionHost?.publicState(), mode = state?.preferences?.movement || 'off';
+  const needed = mode !== 'off' && !quitting && !paused() && !dock && !dragSession && !clickThroughActive
+    && !state?.focusing && !state?.preferences?.reducedMotion && isAlive(petWindow) && petWindow.isVisible();
+  if (!needed) { if (movementTimer) clearInterval(movementTimer); movementTimer = null; movementState = null; return; }
+  if (movementTimer) return;
+  movementState = createMotionState(petWindow.getBounds(), {mode}); movementTime = Date.now();
+  movementTimer = setInterval(() => {
+    if (!isAlive(petWindow)) {clearInterval(movementTimer);movementTimer = null;return;}
+    const current = companionHost.publicState(), nextMode = current.preferences.movement;
+    if (nextMode !== movementState.mode) movementState = setMotionMode(movementState,nextMode);
+    // Native dragging, scale changes and display changes are authoritative.
+    const actual = petWindow.getBounds();
+    if (Math.abs(actual.x-Math.round(movementState.x))>1 || Math.abs(actual.y-Math.round(movementState.y))>1 || actual.width!==movementState.width) movementState=syncMotionBounds(movementState,actual);
+    const now=Date.now(), result=stepMotion(movementState,{deltaMs:Math.max(0,now-movementTime),workArea:screen.getDisplayMatching(actual).workArea,
+      pointer:screen.getCursorScreenPoint(),hidden:!petWindow.isVisible(),paused:paused()||!!dock||!!current.focusing||clickThroughActive,dragging:!!dragSession,reducedMotion:current.preferences.reducedMotion});
+    movementState=result.state;movementTime=now;
+    if(result.moved)petWindow.setPosition(result.bounds.x,result.bounds.y);
+    if(result.action!=='idle' && now-movementActionAt>2000) {movementActionAt=now;emitCompanionEvent({id:'move-'+now,kind:'motion',action:result.action,text:'',priority:15});}
+  },33);
 }
 
 function setDockCollapsed(collapsed) {
@@ -259,6 +301,7 @@ function state() {
     trayAvailable: hasTray(),
     persistenceError,
     version: VERSION,
+    companion: companionHost?.publicState() || null,
     dock: dock ? { edge: dock.edge, collapsed: dock.collapsed } : null,
     clickThroughActive,
     fullscreenAvailable,
@@ -438,6 +481,31 @@ function runAction(action) {
   if (isAlive(petWindow)) petWindow.webContents.send('andromeda:action', action);
 }
 
+function openLink(key) {
+  if (!Object.hasOwn(LINKS, key)) throw new TypeError('未知的快捷入口');
+  return shell.openExternal(LINKS[key]).then(() => true);
+}
+
+function emitCompanionEvent(event) {
+  // Passive events never restore a hidden window or change click-through/fullscreen preferences.
+  if (isAlive(petWindow) && petWindow.isVisible() && !paused() && !clickThroughActive && !dock?.collapsed) {
+    petWindow.webContents.send('andromeda:event', event);
+  }
+}
+
+function showCompanion() {
+  if (quitting || pauses.has('locked') || pauses.has('suspended')) return;
+  if (isAlive(companionWindow)) { companionWindow.show(); companionWindow.focus(); return; }
+  const area = screen.getPrimaryDisplay().workArea;
+  companionWindow = new BrowserWindow({width: Math.min(1080, area.width), height: Math.min(780, area.height),
+    minWidth: Math.min(640, area.width), minHeight: Math.min(540, area.height), title: '星璇 · 陪伴空间', icon: ICON_PATH,
+    backgroundColor: '#101624', show: false, webPreferences: webPreferences()});
+  secureWindow(companionWindow);
+  companionWindow.once('ready-to-show', () => { if (!quitting && !paused() && isAlive(companionWindow)) companionWindow.show(); });
+  companionWindow.on('closed', () => { companionWindow = null; voiceAllowedUntil = 0; companionHost?.cancelAssistant(); if(isAlive(petWindow))petWindow.webContents.send('andromeda:rhythm',0); });
+  loadWindow(companionWindow, COMPANION_URL);
+}
+
 function menuTemplate() {
   return [
     { label: APP_NAME, enabled: false },
@@ -446,6 +514,8 @@ function menuTemplate() {
     { label: '显示星璇', click: restorePet },
     { label: '暂时隐藏', enabled: hasTray(), click: () => hidePet() },
     { label: '设置…', click: showSettings },
+    { label: '陪伴空间 · 专注、待办、对话', click: showCompanion },
+    { label: '去星匠网站看看', click: () => { openLink('home').catch(() => {}); } },
     { label: '检查新版本（打开发布页）', click: () => { openReleases().catch(() => {}); } },
     { type: 'separator' },
     { label: '打个招呼', click: () => runAction('wave') },
@@ -492,7 +562,7 @@ function createTray() {
 }
 
 function trustedSender(event, petOnly = false) {
-  const candidates = petOnly ? [[petWindow, PET_URL]] : [[petWindow, PET_URL], [settingsWindow, SETTINGS_URL]];
+  const candidates = petOnly ? [[petWindow, PET_URL]] : [[petWindow, PET_URL], [settingsWindow, SETTINGS_URL], [companionWindow, COMPANION_URL]];
   return candidates.some(([window, expectedURL]) => (
     isAlive(window) && event.sender === window.webContents
     && event.senderFrame === window.webContents.mainFrame
@@ -518,6 +588,96 @@ function registerIPC() {
   handle('andromeda:open-releases', openReleases);
   handle('andromeda:set-settings', applySettings, true);
   handle('andromeda:show-settings', () => { showSettings(); return state(); });
+  handle('andromeda:show-companion', () => { showCompanion(); return true; });
+  handle('andromeda:interaction', (kind) => {
+    if (!['pet', 'greet', 'play', 'thanks'].includes(kind)) throw new TypeError('未知的互动');
+    return companionHost?.dispatch({type: 'interaction', kind}).then(() => true);
+  }, true);
+  function privateHandle(channel, callback) {
+    ipcMain.handle(channel, (event, payload) => {
+      // A disappearing audio panel may send its final zero after the window closes.
+      // This acknowledgement performs no operation and grants no private access.
+      if(channel==='andromeda:rhythm'&&payload===0&&(quitting||!isAlive(companionWindow)||pauses.has('locked')||pauses.has('suspended')))return false;
+      if (!trustedSender(event) || event.sender !== companionWindow?.webContents) throw new Error('请从陪伴空间操作');
+      if (quitting || pauses.has('locked') || pauses.has('suspended')) throw new Error('当前会话已暂停');
+      if (payload !== undefined && JSON.stringify(payload).length > 12_000_000) throw new TypeError('内容过大');
+      return callback(payload);
+    });
+  }
+  privateHandle('andromeda:companion-state', () => companionHost.state());
+  privateHandle('andromeda:companion-command', command => companionHost.dispatch(command));
+  privateHandle('andromeda:assistant', command => companionHost.assistantCall(command));
+  privateHandle('andromeda:task-bridge', enabled => companionHost.taskBridge(enabled));
+  privateHandle('andromeda:shortcuts', async payload => {
+    if (!payload || !['list','add','remove','launch'].includes(payload.action) || Object.keys(payload).some(key => !['action','id'].includes(key))) throw new TypeError('未知的快捷应用操作');
+    if (payload.action === 'add') {
+      if (process.platform !== 'win32') throw new Error('选择应用目前仅在 Windows 提供');
+      const result = await dialog.showOpenDialog(companionWindow,{title:'选择要加入快捷入口的应用',properties:['openFile'],filters:[{name:'Windows 应用或快捷方式',extensions:['exe','lnk']}]});
+      if (!result.canceled && result.filePaths.length === 1) shortcutStore.add({name:path.basename(result.filePaths[0],path.extname(result.filePaths[0])),path:result.filePaths[0]});
+    } else if (payload.action === 'remove') shortcutStore.remove(payload.id);
+    else if (payload.action === 'launch') await shortcutStore.launch(payload.id);
+    return shortcutStore.list();
+  });
+  privateHandle('andromeda:toss', () => {
+    updateMovement();
+    if (!movementState || movementState.mode !== 'toss') throw new Error('请先开启轻抛模式，并将星璇移出边缘收纳');
+    movementState = throwMotion(movementState,{velocityX:180,velocityY:-320}); return true;
+  });
+  privateHandle('andromeda:rhythm', level => {
+    if (!Number.isFinite(level) || level < 0 || level > 1) throw new TypeError('无效的节奏信号');
+    if (level && Date.now()-rhythmAt < 100) return false;
+    rhythmAt=Date.now();
+    const publicState=companionHost.publicState();
+    if(isAlive(petWindow))petWindow.webContents.send('andromeda:rhythm',petWindow.isVisible()&&!paused()&&!dock&&!dragSession&&!publicState?.focusing&&!publicState?.preferences.reducedMotion?level:0);
+    return true;
+  });
+  privateHandle('andromeda:export-character', async data => {
+    const {createCharacterArchive} = require('./services/character-archive.cjs');
+    const clean = await createCharacterArchive(data,{originalImage:await fs.readFile(path.join(__dirname,'../assets/andromeda.png'))});
+    validateCharacterImage(clean);
+    const result = await dialog.showSaveDialog(companionWindow, {defaultPath: clean.pack.id + '.character.zip', filters: [{name: '角色包（图片与动作）', extensions: ['zip']}]});
+    if (result.canceled || !result.filePath) return false;
+    await fs.writeFile(result.filePath, clean.archive); return true;
+  });
+  handle('andromeda:character',async()=>{await characterReady;return characterStore?.snapshot()||null;});
+  privateHandle('andromeda:install-character',async action=>{
+    if(!['import','clear'].includes(action))throw new TypeError('未知的角色操作');
+    await characterReady;
+    if(action==='clear')await characterStore.clear();
+    else{
+      const result=await dialog.showOpenDialog(companionWindow,{title:'导入并使用角色包',properties:['openFile'],filters:[{name:'星璇编辑器角色包',extensions:['zip']}]});
+      if(result.canceled||result.filePaths.length!==1)return {cancelled:true};
+      const file=result.filePaths[0];if((await fs.stat(file)).size>12*1024*1024)throw new Error('角色包不能超过 12 MiB');
+      await characterStore.install(await fs.readFile(file));
+    }
+    const current=characterStore.snapshot();
+    if(isAlive(petWindow))petWindow.webContents.send('andromeda:character',current);
+    return {name:current?.pack.name||null};
+  });
+  privateHandle('andromeda:restore-backup', async payload => {
+    if (!payload || !['preview','restore'].includes(payload.action) || Object.keys(payload).some(key=>!['action','data'].includes(key))) throw new TypeError('无效的恢复请求');
+    return payload.action==='preview' ? companionHost.previewRestore(payload.data) : companionHost.restoreBackup({backup:payload.data,confirmed:true});
+  });
+  privateHandle('andromeda:open-link', openLink);
+  privateHandle('andromeda:voice-permission', () => { voiceAllowedUntil = Date.now() + 60_000; return true; });
+  privateHandle('andromeda:autostart', enabled => {
+    if (typeof enabled !== 'boolean') throw new TypeError('无效的开机启动设置');
+    if (!app.isPackaged || !['win32', 'darwin'].includes(process.platform)) throw new Error('开机启动仅在已打包的 Windows/macOS 应用中可用');
+    app.setLoginItemSettings({openAtLogin: enabled}); return {enabled: app.getLoginItemSettings().openAtLogin};
+  });
+  privateHandle('andromeda:register-deep-link', enabled => {
+    if(typeof enabled!=='boolean')throw new TypeError('无效的网页入口设置');
+    if(!app.isPackaged)throw new Error('请在解压后的正式程序中启用网页唤起入口');
+    const ok=enabled?app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME):app.removeAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+    if(!ok)throw new Error('系统没有应用这项设置，请检查默认应用设置');
+    return {enabled:app.isDefaultProtocolClient(DEEP_LINK_SCHEME)};
+  });
+  privateHandle('andromeda:export', async kind => {
+    const data = await companionHost.exportData(kind);
+    const result = await dialog.showSaveDialog(companionWindow, {defaultPath: `andromeda-${kind}.json`, filters: [{name: 'JSON', extensions: ['json']}]});
+    if (result.canceled || !result.filePath) return false;
+    await fs.writeFile(result.filePath, JSON.stringify(data, null, 2), {mode: 0o600}); return true;
+  });
   handle('andromeda:hide', hidePet);
   handle('andromeda:quit', () => { setImmediate(quit); return true; });
   handle('andromeda:reset-position', resetPosition);
@@ -567,8 +727,14 @@ function isLocalURL(value) {
 }
 
 function secureSession(target) {
-  target.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  target.setPermissionCheckHandler(() => false);
+  function audioAllowed(contents, permission, details = {}) {
+    return permission === 'media' && Date.now() < voiceAllowedUntil && isAlive(companionWindow)
+      && contents === companionWindow.webContents && contents.getURL() === COMPANION_URL
+      && details.mediaType !== 'video'
+      && (!details.mediaTypes || (details.mediaTypes.length === 1 && details.mediaTypes[0] === 'audio'));
+  }
+  target.setPermissionRequestHandler((contents, permission, callback, details) => callback(audioAllowed(contents, permission, details)));
+  target.setPermissionCheckHandler((contents, permission, _origin, details) => audioAllowed(contents, permission, details));
   target.setDevicePermissionHandler(() => false);
   target.on('will-download', (event) => event.preventDefault());
   target.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !isLocalURL(details.url) }));
@@ -586,7 +752,7 @@ function installLocalProtocol(target) {
     const relative = path.relative(ROOT, filename);
     const extension = path.extname(filename).toLowerCase();
     if (relative.startsWith('..') || path.isAbsolute(relative) || !MIME_TYPES[extension]) return new Response(null, { status: 403 });
-    if (extension === '.html' && !['/src/pet.html', '/src/settings.html'].includes(pathname)) return new Response(null, { status: 403 });
+    if (extension === '.html' && !['/src/pet.html', '/src/settings.html', '/src/companion.html'].includes(pathname)) return new Response(null, { status: 403 });
     try {
       const real = await fs.realpath(filename);
       const realRelative = path.relative(ROOT, real);
@@ -731,13 +897,22 @@ function showSettings() {
   loadWindow(settingsWindow, SETTINGS_URL);
 }
 
+function openDeepLink(value){
+  const target=parseDeepLink(value);if(!target)return false;
+  if(!petWindow||!companionHost){pendingDeepLink=value;return true;}
+  if(pauses.has('locked')||pauses.has('suspended')||quitting)return true;
+  restorePet();if(target==='companion')showCompanion();return true;
+}
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', restorePet);
+  app.on('second-instance', (_event,argv=[])=>{const link=argv.find(value=>typeof value==='string'&&value.startsWith(DEEP_LINK_SCHEME+':'));if(link)openDeepLink(link);else restorePet();});
+  app.on('open-url',(event,value)=>{event.preventDefault();openDeepLink(value);});
   app.on('activate', restorePet);
   app.on('before-quit', () => {
     quitting = true;
+    companionHost?.stop();
+    clearInterval(movementTimer); movementTimer = null;
     stopDrag();
     clearTimeout(positionSaveTimer);
     clearInterval(desktopTimer); desktopTimer = null;
@@ -766,6 +941,36 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(null);
     createPetWindow();
     createTray();
+    shortcutStore = createShortcutStore({directory:app.getPath('userData'),openPath:value=>shell.openPath(value)});
+    shortcutStore.load();
+    characterStore=createCharacterStore(app.getPath('userData'),{validateImage:validateCharacterImage});characterReady=characterStore.load();
+    companionHost = createCompanionHost({directory: app.getPath('userData'), safeStorage, openLink,
+      emit: emitCompanionEvent,
+      publish(value) {
+        if (isAlive(companionWindow)) companionWindow.webContents.send('andromeda:companion', value);
+        if (value.companion && isAlive(petWindow)) petWindow.webContents.send('andromeda:public', companionHost?.publicState());
+        if (value.companion) updateMovement();
+      },
+      capture: async ({signal} = {}) => {
+        if (signal?.aborted || quitting || pauses.has('locked') || pauses.has('suspended')) throw new Error('截图已取消');
+        const display = screen.getDisplayMatching(normalBounds());
+        const sources = await desktopCapturer.getSources({types: ['screen'], thumbnailSize: {width: 1280, height: 720}, fetchWindowIcons: false});
+        if (signal?.aborted || quitting || pauses.has('locked') || pauses.has('suspended')) throw new Error('截图已取消');
+        const source = sources.find(item => item.display_id === String(display.id));
+        if (!source || source.thumbnail.isEmpty()) throw new Error('当前屏幕无法预览');
+        return source.thumbnail.toDataURL();
+      },
+    });
+    companionHost.ready.catch(() => { if (isAlive(companionWindow)) companionWindow.webContents.send('andromeda:companion', {persistenceError: '陪伴模块未能启动，请重新打开应用。'}); });
+    const startupLink=pendingDeepLink||process.argv?.find(value=>value.startsWith(DEEP_LINK_SCHEME+':'));
+    pendingDeepLink=null;if(startupLink)openDeepLink(startupLink);
+    function pausePrivateCompanion() {
+      voiceAllowedUntil = 0; companionHost?.pause();
+      if(isAlive(petWindow))petWindow.webContents.send('andromeda:rhythm',0);
+      if (isAlive(companionWindow)) {companionWindow.webContents.send('andromeda:companion',{hostPaused:true});companionWindow.hide();}
+    }
+    powerMonitor.on('lock-screen', pausePrivateCompanion);
+    powerMonitor.on('suspend', pausePrivateCompanion);
     if (!hasTray()) preferences.settings.autoHideFullscreen = false;
     updateFullscreenMonitor();
     for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {

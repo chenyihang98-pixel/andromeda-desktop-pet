@@ -1,0 +1,89 @@
+# 星匠网站集成记录
+
+2026-10-22，本地完成星璇 Web SDK 和现有星匠网站的集成、生产构建与浏览器验收。本文记录本地验收，不代表线上部署结果；网站生产主分支没有在集成过程中修改。
+
+## 源码与交付位置
+
+集成基于现有星匠网站源码，在网站集成分支进行。公开展示资料不应作为完整站点工程替换；网站自身的源码、提交与发布信息由网站工程管理。
+
+通用组件源码在本仓库 `web/`，共同逻辑位于 `src/shared/`，使用方法见 [Web SDK 文档](../web/README.md)。网站的 `public/andromeda/` 是由此构建的静态 ESM 包，`sdk-manifest.json` 记录版本、逐文件大小和 SHA-256。网站保留原有 Vite、多页面路由、工具目录、游戏 iframe、Three.js 展示和下载实现。
+
+## 实际集成补丁
+
+| 网站文件 | 改动 |
+| --- | --- |
+| `src/guide/sdk.ts` | 新增轻量包装器，动态导入 SDK，读取已有 `content/tools.json`，只为实际存在的元素提供导览；仅声明模匠上手和星璇说明两个项目阅读区域；页离开销毁，保留 BFCache 返回行为。 |
+| `src/main.ts` | 原 `mountGuide()` 改为异步 `mountGuideSDK()`；原下载按钮事件仍工作，成功点击时播放阅读反馈。 |
+| `scripts/sync-companion-sdk.mjs` | 从桌宠仓库构建并复制白名单静态文件，生成文件哈希清单；不调用上传或部署。 |
+| `package.json` | 增加 `npm run sync:companion`，未增加依赖。 |
+| `public/andromeda/` | SDK、共享逻辑、NOTICE 和按需加载的静态姿态图；不复制 Electron 主进程、私密状态或桌面大图集。 |
+| `about/index.html` | 修正已有游戏 Windows 发行的过时路线图；明确浏览器本地偏好及宿主 Cloudflare 的数据处理边界。 |
+| `index.html`、`src/partials/footer.html` | 原绝对化“不收集任何数据”改为准确的“站宠偏好保存在本机”，隐私说明指向关于页。 |
+| `src/styles/pages.css` | 修正 `.guide-strip` 的 grid 最小内容宽度；原样式在 390px 视口会产生横向溢出。 |
+
+包装器的核心接入方式：
+
+```js
+const guide = sdk.mountAndromeda({
+  assetBase: '/xingxuan/',
+  storageKey: 'starwright.andromeda.preferences.v1',
+  content: knowledge.createSiteContent({
+    tools: Object.values(tools.items),
+    origin: location.origin,
+  }),
+  tour: existingTargets,
+});
+```
+
+原网页专用图集是 `andromeda.sprite-atlas/web-v1`，6 个动作和 16 个注视方向。SDK 进入共享角色校验层时转换清单 schema，不修改图集行号；不存在的动作使用明确语义回退。原站的独立动作展示仍用原实现。
+
+## 能力和边界
+
+已可用：需求选择与工具指路、站内公开搜索/FAQ、当前页说明、可结束的目标高亮导览、可折叠和恢复、拖动/左右停靠、当前帧 alpha 点击命中、键盘移动、触摸与手机安全区、表单和游戏 iframe 焦点避让、视频播放/全屏/后台暂停、静态回退、可选小游戏/季节饰物/输入次数反馈、主题和手动偏好导入导出。
+
+网站显式配置下载、主按钮、提交、游戏工具栏与手机导航为避让区域。角色优先保留用户保存位置，必要时临时移位；没有展开空间时收起，点击可手动恢复，临时位置不回写偏好。界面有固定“回桌面陪伴”链接，只在点击时请求 `andromeda-pet://open?target=companion`；旁边常驻下载入口，不检测是否安装、不自动跳转、不向桌面传输任意命令或私人状态。极小视口、整屏占位或用户主动展开时不能保证完全不覆盖任何内容。
+
+输入次数反馈默认关闭，仅在内存里累计当前页输入框 keydown 次数，不读取按键名称、代码或输入值。收起入口每 200ms 最多更新一次；停笔 1.4 秒后安静，恢复输入重新计数；不会在表单里弹话、发声或改变焦点。浏览器测试用读取即抛错的 key/code/value getter 验证这条边界。
+
+实际站点保持匿名；没有新增登录、云同步或任务后端。`getSession` / `receiveTask` 接口已经实现当前用户范围过滤和会话切换清空，但必须由真实服务端会话及授权任务流提供数据，不能把接口测试称为已上线的账号系统。偏好导出只有 motion、sound、reducedMotion、visualStyle、theme 五项，个人任务、记忆、身份和位置不导出。
+
+内容访问与奖励无关。小游戏可以随时退出。阅读彩蛋只适用于宿主明确配置的公开项目/文章容器，进度默认关闭，手动随时领取、可关闭；实际站点仅配置模匠上手和星璇说明两个段落。可见停留和几何进度只保留本页内存，领取/关闭只在本地保存两个布尔值，不读取浏览记录。自动长文识别、多语言及基于账号的自动同步本轮尚未实现。界面有中文 ARIA 标签、键盘操作和减少动态支持；未宣称已完成完整 WCAG 合规审计。宿主网站的 Cloudflare 统计行为由宿主独立负责，SDK 本身不发送遥测。
+
+Web SDK 也可通过 `characterPackUrl` 消费角色编辑器导出的 `andromeda.character/v1`：任意合法单格尺寸、语义映射与无注视/缺动作回退均实际接入。包需先解压到同源路径，加载器拒绝外部图像和重定向，不执行包内脚本；并非只提供元数据接口。现有站点继续使用原 585 KB 网页图集。
+
+## 资源预算
+
+默认静音和安静动作，不初始化声音上下文。真实站复用已有 `public/xingxuan/atlas.webp`（585,898 字节），没有引入 3D/Live2D 渲染依赖。示例独立 SDK 使用桌宠原图集，不能将网站的 586 KB 数字套用到所有宿主。
+
+画室外观只在选择后加载 `assets/studio/life-poses-v1.png`（2,652,111 字节），默认零请求。它是 4×3 的透明静态姿态集，按 313.5×418 单元取样，不是完整动画。加载失败继续用经典图集。生产构建的主脚本约 20.92 KB / gzip 9.26 KB，主样式约 30.51 KB / gzip 7.24 KB；这不包含动态导入 SDK 和图像，SDK 大小以构建清单为准。
+
+## 复现验收
+
+在桌宠仓库运行：
+
+```powershell
+node --test tests/web-policy.test.mjs
+node web/verify-browser.mjs
+```
+
+在现有星匠网站源码目录运行（相邻目录为 `andromeda-desktop-pet`）：
+
+```powershell
+npm ci
+npm run sync:companion
+npm run build
+```
+
+之后在桌宠仓库运行：
+
+```powershell
+node web/verify-site.mjs ../site-project/dist
+```
+
+2026-10-22 验收结果：12 项策略/范围/偏好/角色包/阅读/避让单元测试通过；68 项 SDK 真实浏览器断言通过；现有网站首页、星璇、模匠、小人乱斗、关于、404 共 6 页的 43 项断言通过。TypeScript 检查和 Vite 生产构建通过。浏览器验收包含主题、懒加载、失败降级、当前用户通知、注销清理、输入避让与无内容计数、两种外观的透明区域点击/拖动过滤、64×80 本地图集消费、外源与重定向拒绝、请求中销毁、单页彩蛋手动/进度/一次领取/关闭、PC/390px 关键按钮避让与窄空间收起恢复、固定桌面协议点击意图和下载回落、键盘、手机布局、游戏全屏/焦点、现有版本目录和无 JS 错误。测试使用本机 Chromium 并启用沙箱，启动本地临时 HTTP 服务，不写远端。协议测试拦截点击确认固定目标，没有在测试中探测或启动已安装应用。
+
+本地截图在 `qa/web-desktop.png`、`qa/web-mobile.png`、`qa/web-studio.png`、`qa/web-starwright-integrated.png`、`qa/web-starwright-mobile.png`，属于验收产物。该测试没有验证线上的 Cloudflare 配置、登录服务器或真实外部任务接口。
+
+## 发布边界
+
+网站主分支连接 Cloudflare Pages，推送可能触发自动上线；集成使用网站集成分支，生产发布仍需按网站原有流程处理。feature 分支是否生成预览由托管配置决定，本文没有验证远端部署。更新共享核心后，先重新运行 `sync:companion`、构建和集成验收，避免静态副本与桌宠版本不一致。无需把网站完整源码复制进公开桌宠仓库。

@@ -19,12 +19,14 @@ async function createShell(t, {
   saved = null, deferReady = false, ignoreMouseFails = false, nativeMinimumSize = null,
   platform = 'win32', fullscreenHelperExists = true, packaged = false,
   screenToDipPoint = (point) => ({ ...point }),
+  captureSources,
 } = {}) {
   const { EventEmitter } = require('node:events');
   const Module = require('node:module');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'andromeda-shell-'));
   const windows = [];
-  const menus = [], trays = [], popups = [], externalURLs = [], fullscreenMonitors = [];
+  const menus = [], trays = [], popups = [], externalURLs = [], fullscreenMonitors = [], companionHosts = [];
+  const captureCalls = [], saveDialogs = [];
   let now = 1_000_000, serial = 0;
   const timers = new Map();
   const schedule = (fn, delay, interval = false) => {
@@ -82,6 +84,7 @@ async function createShell(t, {
       this.webContents = new EventEmitter();
       Object.assign(this.webContents, {
         mainFrame: { url: '' }, sent: [],
+        getURL: () => this.webContents.mainFrame.url,
         send(channel, value) { this.sent.push({ channel, value }); },
         isDestroyed: () => this.destroyed,
         setWindowOpenHandler: (value) => { this.openHandler = value; },
@@ -162,7 +165,14 @@ async function createShell(t, {
     Menu: { setApplicationMenu() {}, buildFromTemplate(items) { menus.push(items); return { items, popup(options) { popups.push(options); } }; } },
     session: { defaultSession, fromPartition: () => desktopSession },
     protocol: { registerSchemesAsPrivileged() {} },
-    dialog: { showErrorBox(_title, message) { throw new Error(message); } },
+    safeStorage: { isEncryptionAvailable: () => false },
+    desktopCapturer: { async getSources(options) {
+      captureCalls.push(options);
+      return captureSources ? captureSources(options) : [{ display_id: String(displays[0].id),
+        thumbnail: { isEmpty: () => false, toDataURL: () => 'data:image/png;base64,cG5n' } }];
+    } },
+    dialog: { showErrorBox(_title, message) { throw new Error(message); },
+      async showSaveDialog(window, options) { saveDialogs.push({window, options}); return {canceled: true}; } },
   };
   const entry = require.resolve('../src/main.cjs');
   // Scope the fake clock to the actual entry point, without replacing Node's
@@ -176,6 +186,13 @@ async function createShell(t, {
     if (name === 'electron') return fakeElectron;
     if (name === 'node:fs') return {
       ...fs, existsSync: (file) => file === helperPath ? fullscreenHelperExists : fs.existsSync(file),
+    };
+    if (name === './companion-host.cjs') return {
+      createCompanionHost(options) {
+        const host = localRequire(name).createCompanionHost(options);
+        companionHosts.push(host);
+        return host;
+      },
     };
     if (name === './fullscreen-monitor.cjs') return {
       createFullscreenMonitor(options) {
@@ -200,9 +217,13 @@ async function createShell(t, {
     { platform, resourcesPath },
   );
   await new Promise((resolve) => setImmediate(resolve));
+  // Wait for the actual host's async import/storage initialization, not just the app ready microtask.
+  await Promise.all(companionHosts.map(host => host.ready));
   t.after(() => {
     app.quit();
     delete require.cache[entry];
+    assert.equal(path.dirname(path.resolve(folder)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(folder).startsWith('andromeda-shell-'));
     fs.rmSync(folder, { recursive: true, force: true });
   });
   const eventFor = (window) => ({ sender: window.webContents, senderFrame: window.webContents.mainFrame });
@@ -210,7 +231,7 @@ async function createShell(t, {
   return {
     app, windows, menus, trays, popups, handlers, eventFor, invoke, ipcMain,
     screen, powerMonitor, desktopSession, clock, externalURLs, folder: app.getPath('userData'),
-    fullscreenMonitors, fullscreenHelperPath: helperPath,
+    fullscreenMonitors, fullscreenHelperPath: helperPath, captureCalls, saveDialogs,
     send: (channel, ...args) => ipcMain.emit(`andromeda:${channel}`, eventFor(windows[0]), ...args),
     state: () => invoke(windows[0], 'get-state'),
     saved: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')),
@@ -1108,4 +1129,165 @@ test('quit stops fullscreen helper once and ignores all of its delayed callbacks
   assert.equal(pet.calls.filter(([name]) => name === 'show').length, showCount);
   assert.equal(shell.clock.pending(), 0);
   assert.equal(shell.state().fullscreenError, null);
+});
+
+async function openOwner(shell) {
+  shell.invoke(shell.windows[0], 'show-companion');
+  await new Promise(resolve => setImmediate(resolve));
+  const owner = shell.windows.find(window => window.webContents.mainFrame.url.endsWith('/companion.html'));
+  assert.ok(owner);
+  return owner;
+}
+
+const privateOperations = [
+  ['companion-state'],
+  ['companion-command', {type: 'todo.add', text: 'private task'}],
+  ['assistant', {method: 'configure', payload: {enabled: false}}],
+  ['task-bridge', true], ['export', 'backup'], ['voice-permission'], ['open-link', 'home'],
+];
+
+test('private companion IPC rejects pet/settings, same-URL subframes, foreign senders and navigated owners', async t => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0];
+  shell.invoke(pet, 'show-settings');
+  const owner = await openOwner(shell);
+  const settings = shell.windows.find(window => window.webContents.mainFrame.url.endsWith('/settings.html'));
+  for (const [channel, payload] of privateOperations) {
+    for (const window of [pet, settings]) assert.throws(() => shell.invoke(window, channel, payload), /陪伴空间/);
+    const handler = shell.handlers.get(`andromeda:${channel}`);
+    assert.throws(() => handler({sender: owner.webContents, senderFrame: {url: owner.webContents.mainFrame.url}}, payload), /陪伴空间/);
+    assert.throws(() => handler({sender: pet.webContents, senderFrame: owner.webContents.mainFrame}, payload), /陪伴空间/);
+  }
+  const expectedURL = owner.webContents.mainFrame.url;
+  owner.webContents.mainFrame.url = 'https://starwright.xyz/';
+  for (const [channel, payload] of privateOperations) assert.throws(() => shell.invoke(owner, channel, payload), /陪伴空间/);
+  owner.webContents.mainFrame.url = expectedURL;
+  assert.equal(shell.captureCalls.length, 0);
+  assert.equal(shell.saveDialogs.length, 0);
+  assert.deepEqual(shell.externalURLs, []);
+  assert.deepEqual((await shell.invoke(owner, 'companion-state')).companion.todos, []);
+});
+
+test('owner state and bridge credentials stay private while public pet snapshots contain no memory or key', async t => {
+  const shell = await createShell(t);
+  const owner = await openOwner(shell);
+  await shell.invoke(owner, 'companion-command', {type: 'memory.add', text: 'private-memory-sentinel', source: 'owner'});
+  const assistant = await shell.invoke(owner, 'assistant', {method: 'configure', payload: {apiKey: 'private-key-sentinel-123456'}});
+  assert.equal(assistant.hasApiKey, true);
+  assert.equal(assistant.keyStorage, 'session');
+  const state = await shell.invoke(owner, 'companion-state');
+  assert.equal(state.companion.memories[0].text, 'private-memory-sentinel');
+  assert.equal(JSON.stringify(state).includes('private-key-sentinel-123456'), false);
+  const bridge = await shell.invoke(owner, 'task-bridge', true);
+  try {
+    assert.equal(bridge.running, true);
+    assert.match(bridge.token, /^[A-Za-z0-9_-]{43}$/);
+    const publicValues = [shell.state(), ...shell.windows[0].webContents.sent.map(entry => entry.value)];
+    const publicJSON = JSON.stringify(publicValues);
+    assert.equal(publicJSON.includes('private-memory-sentinel'), false);
+    assert.equal(publicJSON.includes('private-key-sentinel-123456'), false);
+    assert.equal(publicJSON.includes(bridge.token), false);
+    assert.equal(JSON.stringify(await shell.invoke(owner, 'companion-state')).includes(bridge.token), false);
+    assert.equal(await shell.invoke(owner, 'export', 'backup'), false);
+    assert.equal(shell.saveDialogs.length, 1);
+  } finally {
+    const stopped = await shell.invoke(owner, 'task-bridge', false);
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.token, null);
+  }
+});
+
+test('a due owner todo produces a passive event without changing desktop safety switches', async t => {
+  const shell = await createShell(t);
+  const pet = shell.windows[0], owner = await openOwner(shell);
+  const settingsBefore = shell.state().settings;
+  const shownBefore = pet.calls.filter(([name]) => name === 'show').length;
+  const result = await shell.invoke(owner, 'companion-command', {type: 'todo.add', text: 'Drink water now', dueAt: 0});
+  assert.equal(result.state.todos.at(-1).text, 'Drink water now');
+  assert.ok(pet.webContents.sent.some(entry => entry.channel === 'andromeda:event'
+    && entry.value.kind === 'todo.due' && entry.value.text === 'Drink water now'));
+  assert.deepEqual(shell.state().settings, settingsBefore);
+  assert.equal(pet.calls.filter(([name]) => name === 'show').length, shownBefore);
+  assert.equal(pet.calls.filter(([name]) => name === 'focus').length, 0);
+});
+
+test('passive todo events cannot restore hidden/fullscreen pets or disable click-through', async t => {
+  for (const mode of ['hidden', 'click-through', 'fullscreen']) await t.test(mode, async t => {
+    const shell = await createShell(t);
+    const pet = shell.windows[0], owner = await openOwner(shell);
+    if (mode === 'hidden') shell.invoke(pet, 'hide');
+    if (mode === 'click-through') shell.invoke(pet, 'set-settings', {clickThrough: true});
+    if (mode === 'fullscreen') {
+      shell.invoke(pet, 'set-settings', {autoHideFullscreen: true});
+      shell.fullscreenMonitors[0].snapshot(primary.bounds);
+    }
+    const before = shell.state();
+    const shownBefore = pet.calls.filter(([name]) => name === 'show').length;
+    const eventCount = pet.webContents.sent.filter(entry => entry.channel === 'andromeda:event').length;
+    const result = await shell.invoke(owner, 'companion-command', {type: 'todo.add', text: `quiet-${mode}`, dueAt: 0});
+    assert.ok(result.events.some(event => event.kind === 'todo.due'));
+    assert.equal(pet.webContents.sent.filter(entry => entry.channel === 'andromeda:event').length, eventCount);
+    const after = shell.state();
+    assert.equal(after.visible, before.visible);
+    assert.equal(after.clickThroughActive, before.clickThroughActive);
+    assert.equal(after.fullscreenSuppressed, before.fullscreenSuppressed);
+    assert.deepEqual(after.settings, before.settings);
+    assert.equal(pet.calls.filter(([name]) => name === 'show').length, shownBefore);
+  });
+});
+
+test('screenshots require explicit owner opt-in and per-request confirmation, and do not become passive answers', async t => {
+  const shell = await createShell(t);
+  const owner = await openOwner(shell);
+  await assert.rejects(shell.invoke(owner, 'assistant', {method: 'captureOnce', payload: {confirmed: true}}), /尚未启用/);
+  await shell.invoke(owner, 'assistant', {method: 'configure', payload: {captureEnabled: true}});
+  await assert.rejects(shell.invoke(owner, 'assistant', {method: 'captureOnce', payload: {confirmed: false}}), /明确确认/);
+  assert.equal(shell.captureCalls.length, 0);
+  const result = await shell.invoke(owner, 'assistant', {method: 'captureOnce', payload: {confirmed: true}});
+  assert.equal(result.image, 'data:image/png;base64,cG5n');
+  assert.equal(shell.captureCalls.length, 1);
+  assert.equal(shell.windows[0].webContents.sent.some(entry => entry.channel === 'andromeda:event' && entry.value.kind === 'assistant.result'), false);
+  assert.equal(JSON.stringify(await shell.invoke(owner, 'companion-state')).includes(result.image), false);
+});
+
+test('lock and suspend block all private operations, revoke microphone grants, and keep owner windows hidden', async t => {
+  for (const [pause, resume] of [['lock-screen', 'unlock-screen'], ['suspend', 'resume']]) await t.test(pause, async t => {
+    const shell = await createShell(t);
+    const pet = shell.windows[0], owner = await openOwner(shell);
+    assert.equal(await shell.invoke(owner, 'voice-permission'), true);
+    assert.equal(shell.desktopSession.permissionCheck(owner.webContents, 'media', null, {mediaTypes: ['audio']}), true);
+    assert.equal(shell.desktopSession.permissionCheck(owner.webContents, 'media', null, {mediaType: 'video'}), false);
+    assert.equal(shell.desktopSession.permissionCheck(pet.webContents, 'media', null, {mediaTypes: ['audio']}), false);
+    shell.powerMonitor.emit(pause);
+    assert.equal(owner.visible, false);
+    assert.ok(owner.webContents.sent.some(entry => entry.channel === 'andromeda:companion' && entry.value.hostPaused));
+    for (const [channel, payload] of privateOperations) assert.throws(() => shell.invoke(owner, channel, payload), /暂停/);
+    assert.equal(shell.desktopSession.permissionCheck(owner.webContents, 'media', null, {mediaTypes: ['audio']}), false);
+    shell.invoke(pet, 'show-companion');
+    assert.equal(owner.visible, false);
+    assert.equal(shell.captureCalls.length, 0);
+    assert.equal(shell.saveDialogs.length, 0);
+    shell.powerMonitor.emit(resume);
+    assert.equal(owner.visible, false, 'Resuming never automatically reveals private content');
+    assert.equal(shell.desktopSession.permissionCheck(owner.webContents, 'media', null, {mediaTypes: ['audio']}), false);
+    assert.ok(await shell.invoke(owner, 'companion-state'));
+  });
+});
+
+test('locking during a pending screenshot cancels its result and discards late native pixels', async t => {
+  let finishCapture;
+  const shell = await createShell(t, {captureSources: () => new Promise(resolve => { finishCapture = resolve; })});
+  const owner = await openOwner(shell);
+  await shell.invoke(owner, 'assistant', {method: 'configure', payload: {captureEnabled: true}});
+  const pending = shell.invoke(owner, 'assistant', {method: 'captureOnce', payload: {confirmed: true}});
+  const rejected = assert.rejects(pending, /取消/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(shell.captureCalls.length, 1);
+  shell.powerMonitor.emit('lock-screen');
+  finishCapture([{display_id: '1', thumbnail: {isEmpty: () => false, toDataURL: () => 'data:image/png;base64,bGF0ZQ=='}}]);
+  await rejected;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(owner.visible, false);
+  assert.equal(owner.webContents.sent.some(entry => entry.value.assistantEvent?.type === 'assistant:result'), false);
+  assert.equal(JSON.stringify(owner.webContents.sent).includes('data:image/png'), false);
 });

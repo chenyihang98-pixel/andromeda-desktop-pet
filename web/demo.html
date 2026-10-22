@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark"><title>星璇 · 同一个朋友，两种陪伴</title>
+  <link rel="stylesheet" href="./demo.css"><script type="module" src="./demo.mjs"></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="nav wrap"><a class="brand" href="https://starwright.xyz/">✦ <span>星匠 <small>STARWRIGHT</small></span></a><nav aria-label="演示导航"><a href="#possibilities">认识星璇</a><a href="#workbench">试一试</a><a href="#integration">接入说明</a></nav><span class="tag">本地体验 / WEB SDK</span></header>
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-copy"><p class="eyebrow"><span class="pulse"></span> ANDROMEDA · 安静地，在这里</p><h1>同一个朋友，<br>两种<span>陪伴。</span></h1><p class="lead">在桌面，陪你把事情做完。<br>在网页，帮你找到下一步。<br>不打断你的节奏，也随时回应你的好奇。</p><div class="actions"><button class="primary" id="open-guide">和星璇打个招呼 <span>↗</span></button><a class="secondary" href="#workbench">看看她能做什么 ↓</a></div><p class="small">默认安静 · 默认静音 · 你的偏好留在本浏览器</p></div>
+      <div class="hero-art" aria-label="星璇的静态形象展示"><div class="orbit one"></div><div class="orbit two"></div><span class="spark s1">✦</span><span class="spark s2">✧</span><span class="spark s3">✦</span><div class="halo"></div><img src="../assets/neutral.png" alt="蓝发、星饰的星璇" width="384" height="416"><div class="orbit-caption"><span>01 / CALM COMPANION</span><span>一小片属于你的星空</span></div></div>
+    </section>
+    <section class="wrap section" id="possibilities"><div class="section-head"><div><p class="eyebrow">陪伴，有分寸</p><h2>需要时出现，专注时退后。</h2></div><p>把好奇留给创作，<br>把繁琐的找路交给星璇。</p></div><div class="cards"><article class="card"><span class="number">01</span><div class="card-icon">⌘</div><h3>带你找到下一步</h3><p>页面导览、工具搜索、常见问题。答案和真实入口放在一起。</p><button class="text-button" id="tour-button">开启一段小导览 ↗</button></article><article class="card"><span class="number">02</span><div class="card-icon">◐</div><h3>陪伴，也懂得安静</h3><p>输入时避让，后台暂停，左右边缘停靠。随时收起，也随时找回。</p><button class="text-button" id="collapse-button">试试收起星璇 ↗</button></article><article class="card"><span class="number">03</span><div class="card-icon">✳</div><h3>保留一点小快乐</h3><p>摸摸头、挥挥手，收集几颗星星。动作和装饰都可以按喜好选择。</p><button class="text-button" id="wave-button">让她挥挥手 ↗</button></article></div></section>
+    <section class="wrap section workbench" id="workbench"><div><p class="eyebrow">亲自试试</p><h2>你在创作，<br>她在旁边。</h2><p class="muted">在右侧输入框写点东西，观察星璇避让。离开输入框后，她会回到原来的位置。</p><div class="note"><span>✦</span><p>这只是浏览器里的本地演示。没有登录服务，也没有虚构的云端任务。</p></div></div><div class="work-card"><div class="work-card-head"><span class="dot"></span><span>创作便笺</span><span class="tag">LOCAL ONLY</span></div><label for="creation-note">今天想创作什么？</label><textarea id="creation-note" placeholder="例如：做一个有星空房间的小人游戏……" rows="5"></textarea><div class="actions"><button class="primary" id="finish-note">完成这段构想 ✓</button><button class="secondary" id="test-scope">测试访客隔离</button></div><p id="demo-status" class="status" role="status">文字不会上传，也不会保存。你可以放心试用。</p></div></section>
+    <section class="wrap section" id="integration"><div class="section-head"><div><p class="eyebrow">给宿主网站</p><h2>一个小组件，清楚的边界。</h2></div><p>不替换你的网站。<br>只为它添一位向导。</p></div><div class="integration"><div><h3>挂载与离开，同样完整</h3><p>原生 ESM、独立样式、显式 mount / destroy。复用桌宠的角色图集和行为核心；游戏、3D 展示与网站导航继续使用原来的实现。</p><ul><li>公开知识来自统一内容源，可以注入宿主工具目录。</li><li>访客不会读取站长记忆；任务事件必须由宿主验证身份与用户范围。</li><li>动画失败保留静态角色，减少动态和手机交互均有回退。</li></ul><a href="./README.md" class="secondary">阅读完整接入说明 →</a></div><pre><code>import { mountAndromeda }
+  from './web/andromeda.mjs';
+
+const guide = mountAndromeda({
+  assetBase: '../assets/',
+  tour: yourPageTour,
+});
+
+// 页面卸载 / SPA 路由离开时
+guide.destroy();</code></pre></div></section>
+  </main>
+  <footer class="wrap"><a class="brand" href="https://starwright.xyz/">✦ 星匠 Starwright</a><p>星璇形象与图集版权保留 · 这是可嵌入组件的本地演示</p><a href="https://github.com/chenyihang98-pixel/andromeda-desktop-pet" target="_blank" rel="noopener noreferrer">GitHub ↗</a></footer>
+</body></html>

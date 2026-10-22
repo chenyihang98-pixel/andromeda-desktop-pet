@@ -34,9 +34,9 @@ function scheduleIdle() {
   // Global gaze is a calm continuous pose: it replaces autonomous idle, never
   // explicit actions. The main process samples the cursor; no coordinates leave
   // this renderer. Local gaze remains a separate hover-only preference.
-  if (paused() || dragging || settings.globalGaze || (settings.gaze && pointerOver) || reducedMotion.matches) return;
+  if (paused() || dragging || settings.globalGaze || (settings.gaze && pointerOver) || reducedMotion.matches || window.andromedaEnhancements?.busy?.()) return;
   const delay = neutralDelay(settings.motion);
-  if (delay !== null) timer = setTimeout(() => play('idle'), delay);
+  if (delay !== null) timer = setTimeout(() => {if(!window.andromedaEnhancements?.idle?.())play('idle');}, delay);
 }
 function neutral() { sequence = undefined; draw(); scheduleIdle(); }
 function tick() {
@@ -50,7 +50,7 @@ function play(state) {
   if (!ready || dragging || !manifest.animations[state] || paused()) return;
   cancelTimer();
   sequence = {state, start: performance.now(), multiplier: state === 'idle' ? manifest.desktopPlayback.idleSpeedMultiplier : 1.5};
-  if (reducedMotion.matches) { draw(manifest.animations[state].row, 0); timer = setTimeout(neutral, 900); return; }
+  if (reducedMotion.matches || window.andromedaEnhancements?.reduced?.()) { draw(manifest.animations[state].row, 0); timer = setTimeout(neutral, 900); return; }
   tick();
 }
 function applyState(state) {
@@ -63,6 +63,8 @@ function applyState(state) {
   const gazeChanged = ['gaze', 'globalGaze'].some(key => settings[key] !== nextSettings[key]);
   const surfaceChanged = visible !== nextVisible || dock?.edge !== nextDock?.edge || dock?.collapsed !== nextDock?.collapsed;
   settings = nextSettings; visible = nextVisible; dock = nextDock;
+  if(gazeChanged)window.andromedaEnhancements?.neutralGaze?.();
+  window.andromedaEnhancements?.onState?.(state);
   const collapsed = Boolean(dock?.collapsed);
   document.body.dataset.dock = dock?.edge || '';
   document.body.classList.toggle('collapsed', collapsed);
@@ -88,9 +90,10 @@ function finishDrag(cancelled = false) {
   void callAPI(cancelled ? 'cancelDrag' : 'endDrag');
   neutral();
 }
-function canGaze() { return ready && !paused() && !dragging && !sequence && !reducedMotion.matches; }
+function canGaze() { return ready && !paused() && !dragging && !sequence && !reducedMotion.matches && !window.andromedaEnhancements?.reduced?.(); }
 function globalGaze(point) {
   if (!settings.globalGaze || !canGaze() || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+  if(window.andromedaEnhancements?.gaze?.(point.x,point.y))return;
   const cell = gazeCell(point.x, point.y);
   draw(cell.row, cell.column);
 }
@@ -109,6 +112,7 @@ canvas.addEventListener('pointermove', event => {
   if (settings.gaze && !settings.globalGaze && canGaze()) {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
+    if(window.andromedaEnhancements?.gaze?.((event.clientX-rect.left-rect.width/2)*192/rect.width,(event.clientY-rect.top-rect.height/2)*208/rect.height))return;
     const cell = gazeCell((event.clientX - rect.left - rect.width / 2) * 192 / rect.width, (event.clientY - rect.top - rect.height / 2) * 208 / rect.height);
     draw(cell.row, cell.column);
   }
@@ -124,7 +128,7 @@ canvas.addEventListener('pointerleave', () => {
   pointerOver = false;
   // Crossing the canvas boundary must never interrupt a greeting or a global
   // gaze pose. Only a local hover gaze needs to return to its idle schedule.
-  if (settings.gaze && !settings.globalGaze && !dragging && !sequence) neutral();
+  if (settings.gaze && !settings.globalGaze && !dragging && !sequence) {window.andromedaEnhancements?.neutralGaze?.();neutral();}
 });
 canvas.addEventListener('dblclick', () => { if (!paused()) void callAPI('showSettings'); });
 canvas.addEventListener('keydown', event => {
@@ -149,7 +153,8 @@ try {
   manifest = await (await fetch('../assets/manifest.json')).json();
   atlasImage = new Image(); atlasImage.src = '../assets/' + manifest.image; await atlasImage.decode();
   ready = true; draw();
-  api?.onState(applyState); api?.onAction(action => play(ACTIONS[action])); api?.onGaze?.(globalGaze);
+  api?.onState(applyState); api?.onAction(action => { if (!window.andromedaEnhancements?.manual?.(action)) play(ACTIONS[action]); }); api?.onGaze?.(globalGaze);
+  window.andromedaEnhancements?.connect?.({play, neutral, canvas, manifest});
   if (api) applyState(await api.getState());
   // The first state may equal the calm defaults, so start the initial schedule
   // explicitly without rearming it on subsequent metadata-only state events.
