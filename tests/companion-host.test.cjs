@@ -287,3 +287,38 @@ test('model receives closed tool schemas and suggestions require a separate expl
   await host.assistantCall({method: 'confirmTool', payload: {id: before.assistant.pendingTools[0].id, confirmed: true}});
   assert.equal((await host.state()).companion.todos[0].text, '模型建议的待办');
 });
+
+test('a delayed persona save returns the latest companion state after a newer command commits', async t => {
+  const {host}=await fixture(t);await host.ready;
+  let release,entered;
+  const gate=new Promise(resolve=>{release=resolve;}),arrived=new Promise(resolve=>{entered=resolve;});
+  const rename=fs.rename;
+  fs.rename=async(from,to)=>{if(path.basename(to)==='assistant.json'){entered();await gate;}return rename(from,to);};
+  try{
+    const saving=host.dispatch({type:'profile.update',patch:{persona:'保存人设时也可以添加待办'}});
+    await arrived;
+    const added=await host.dispatch({type:'todo.add',text:'必须留在新快照里'});
+    release();const result=await saving;
+    assert.deepEqual(result.state.todos,added.state.todos);
+    assert.deepEqual(result.state.todos,(await host.state()).companion.todos);
+  }finally{fs.rename=rename;release();}
+});
+
+test('private bridge reads never start a listener and restore the current session after the panel closes', async t => {
+  const {host,publications}=await fixture(t);
+  const closed={running:false,enabled:false,host:'127.0.0.1',port:null,url:null,token:null};
+  assert.deepEqual(await host.taskBridgeState(),closed);
+  assert.deepEqual((await host.state()).bridge,closed);
+  const started=await host.taskBridge(true);
+  assert.equal(publications.at(-1).bridge.token,started.token);
+  host.cancelAssistant(); // Closing the private window only cancels assistant work.
+  assert.deepEqual(await host.taskBridgeState(),started);
+  assert.deepEqual((await host.state()).bridge,started);
+  assert.equal(JSON.stringify(host.publicState()).includes(started.token),false);
+  assert.equal(JSON.stringify(await host.exportData('backup')).includes(started.token),false);
+  const exposed=await host.taskBridgeState();exposed.token='changed';
+  assert.equal((await host.taskBridgeState()).token,started.token);
+  await host.taskBridge(false);assert.deepEqual(await host.taskBridgeState(),closed);
+  const restarted=await host.taskBridge(true);assert.notEqual(restarted.token,started.token);
+  await host.stop();assert.deepEqual(await host.taskBridgeState(),closed);
+});

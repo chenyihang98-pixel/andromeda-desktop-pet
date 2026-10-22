@@ -85,6 +85,14 @@ try {
   });equal(streamed.text,'星'.repeat(200));assert.ok(streamed.mutations<=2);checks++;
   await page.evaluate(()=>window.testFinishChat('星'.repeat(200)));await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);
   equal(await page.locator('#chat-history .message.assistant').last().textContent(),'星'.repeat(200));
+  equal(await page.locator('#chat-text').inputValue(),'');
+  await page.locator('#chat-text').fill('第一条消息');await page.locator('#chat-send').click();
+  await page.locator('#chat-text').fill('下一条未发送的草稿');await page.evaluate(()=>window.testFinishChat('第一条回答'));
+  await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);equal(await page.locator('#chat-text').inputValue(),'下一条未发送的草稿');
+  await page.locator('#chat-text').fill('同文草稿');await page.locator('#chat-send').click();
+  await page.locator('#chat-text').fill('编辑过');await page.locator('#chat-text').fill('同文草稿');
+  await page.evaluate(()=>window.testFinishChat('回答'));await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);
+  equal(await page.locator('#chat-text').inputValue(),'同文草稿');
   await page.locator('#chat-text').fill('取消中的流式');await page.locator('#chat-send').click();await page.locator('#clear-chat').click();
   await page.waitForFunction(()=>!document.querySelector('#chat-send').disabled);await page.evaluate(()=>window.testPublish({assistantEvent:{type:'assistant:delta',requestId:window.testRequestId,text:'过时数据'}}));
   equal(await page.locator('#chat-history').textContent(),'你好，想说点什么都可以。对话服务按需开启。');await page.evaluate(()=>{window.testHoldChat=false;});

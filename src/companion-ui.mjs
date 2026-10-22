@@ -8,12 +8,13 @@ const all = selector => [...document.querySelectorAll(selector)];
 let companion, assistant, streaming = null, activeTab = 'today', image = null, recorder = null, recordingTimer, audioContext, audioSource;
 let configRendered = false, profileRendered = false, lastHistory = '', lastTodoOptions = '', bridge = {enabled: false}, ambience, mediaEpoch=0, audioEpoch=0;
 let closing=false, editor, restoreData, gameTimer, gameTicks=0, score=0, countdownTimer, streamFrame, streamText='', unsubscribe;
-let chatPending=false, chatEpoch=0, streamRequestId=null;
+let chatPending=false, chatEpoch=0, streamRequestId=null, chatDraftRevision=0;
 const rowMetadata = new WeakMap();
 const labels = {today:'今天',tasks:'专注与待办',chat:'聊一会儿',memory:'记忆手册',appearance:'星璇图鉴',preferences:'偏好与连接'};
 function show(message, error = false) { $('#status').textContent = message; $('#status').hidden = !message; $('#status').dataset.error = String(error); }
 async function invoke(callback) { try { return await callback(); } catch (error) { show(error?.message || '操作暂未完成，请重试。', true); return null; } }
-async function command(type, payload = {}) { const result = await api.command({type, ...payload}); if (result?.state) renderCompanion(result.state); if (result?.persistenceError) show(result.persistenceError, true); return result; }
+// The host publishes committed state; a delayed command response must not repaint an older snapshot.
+async function command(type, payload = {}) { const result = await api.command({type, ...payload}); if (result?.persistenceError) show(result.persistenceError, true); return result; }
 async function service(method, payload) { return api.assistant({method, payload}); }
 function tab(name) {
   if (!Object.hasOwn(labels, name)) return;
@@ -102,6 +103,7 @@ function editInline(entry, selector, save) {
 }
 function editTodo(entry) { editInline(entry,'#todos', text => command('todo.update',{id:entry.id,patch:{text}})); }
 function editMemory(entry) { editInline(entry,'#memories', text => command('memory.update',{id:entry.id,text})); }
+function resetRecordEditors() {for(const selector of ['#todos','#memories'])$(selector).replaceChildren();}
 function message(role, text) { const el = document.createElement('div'); el.className = `message ${role}`; el.textContent = text; $('#chat-history').append(el); $('#chat-history').scrollTop = $('#chat-history').scrollHeight; return el; }
 function flushStream() {
   if (streamFrame) cancelAnimationFrame(streamFrame);streamFrame = null;
@@ -112,6 +114,13 @@ function flushStream() {
 }
 function clearStream() {if (streamFrame) cancelAnimationFrame(streamFrame);streamFrame=null;streamText='';streamRequestId=null;streaming=null;}
 function clearCapture() {image=null;$('#capture-image').removeAttribute('src');$('#capture-preview').hidden=true;}
+function renderBridge(next) {
+  bridge = {...next, enabled: Boolean(next?.running)};
+  $('#bridge-toggle').textContent = bridge.enabled ? '关闭本机任务桥' : '开启本机任务桥';
+  $('#bridge-help').textContent = bridge.enabled
+    ? `POST http://127.0.0.1:${bridge.port}/events\nAuthorization: Bearer ${bridge.token}\nContent-Type: application/json\n\n${JSON.stringify({eventId:'build-1',taskId:'my-project',status:'completed',title:'项目构建',text:'构建完成'},null,2)}\n\n令牌只在本机显示，重启或关闭后失效。`
+    : '事件桥已关闭。';
+}
 function renderAssistant(next) {
   if (!next) return; assistant = next;
   $('#chat-connection').textContent = next.enabled && next.model ? `${next.model} · ${next.endpoint} · ${next.status.kind === 'idle' ? '可以开始对话' : '正在处理，可随时停止'}` : '配置自己的模型服务后开启对话。未开启时，专注与陪伴照常可用。';
@@ -133,6 +142,7 @@ async function confirmTool(card,confirmed){
   finally{while($('#tool-receipts').children.length>10)$('#tool-receipts').lastElementChild.remove();}
 }
 function receive(update) {
+  if (update.bridge) renderBridge(update.bridge);
   if(update.hostPaused){cancelRecording();stopAudio();stopGame('已暂停');ambience?.stop();clearCapture();}
   if (update.companion) renderCompanion(update.companion); if (update.assistant) renderAssistant(update.assistant);
   if (update.persistenceError) show(update.persistenceError,true);
@@ -167,11 +177,12 @@ $('#assistant-config').addEventListener('submit',event => {event.preventDefault(
   if ($('#ai-key').value) patch.apiKey = $('#ai-key').value;
   try { renderAssistant(await service('configure',patch)); show('连接设置已保存。未发送测试请求。'); } finally { $('#ai-key').value = ''; }
 });});
+$('#chat-text').addEventListener('input', () => {chatDraftRevision++;});
 $('#chat-form').addEventListener('submit',event => {event.preventDefault();void invoke(async () => {
   const text = $('#chat-text').value.trim(); if (!text || chatPending) return;
-  const epoch=++chatEpoch;chatPending=true;clearStream();message('user',text);streaming=message('assistant','');$('#chat-send').disabled=true;
-  const payload = {text,...(image ? {image} : {}),...($('#use-memory').checked ? {memory:companion.memories.map(entry=>entry.text).join('\n').slice(0,4000)} : {})};
-  try {await service('chat',payload);if(epoch===chatEpoch&&!closing){$('#chat-text').value='';clearCapture();}}
+  const epoch=++chatEpoch, submittedRevision=chatDraftRevision, submittedImage=image;chatPending=true;clearStream();message('user',text);streaming=message('assistant','');$('#chat-send').disabled=true;
+  const payload = {text,...(submittedImage ? {image:submittedImage} : {}),...($('#use-memory').checked ? {memory:companion.memories.map(entry=>entry.text).join('\n').slice(0,4000)} : {})};
+  try {await service('chat',payload);if(epoch===chatEpoch&&!closing){if(chatDraftRevision===submittedRevision)$('#chat-text').value='';if(image===submittedImage)clearCapture();}}
   finally {if(epoch===chatEpoch&&!closing){flushStream();chatPending=false;clearStream();receive(await api.companionState());}}
 });});
 $('#chat-cancel').addEventListener('click', () => void invoke(async () => {cancelRecording();await service('cancel');stopAudio();show('已停止。');}));
@@ -204,7 +215,7 @@ $('#voice-input').addEventListener('click', () => void invoke(async () => {
   try{recorder=new MediaRecorder(stream,{mimeType:'audio/webm'});}catch(error){stream.getTracks().forEach(track=>track.stop());throw error;}
   const currentRecorder=recorder;
   recorder.addEventListener('dataavailable',event=>{size+=event.data.size;if(size<=8*1024*1024)chunks.push(event.data);else if(currentRecorder.state==='recording')currentRecorder.stop();});
-  recorder.addEventListener('stop',()=>{if(recorder===currentRecorder){recorder=null;clearTimeout(recordingTimer);recordingTimer=null;$('#voice-input').textContent='按下开始录音';}stream.getTracks().forEach(track=>track.stop());if(currentRecorder.discard||epoch!==mediaEpoch||closing)return;void invoke(async()=>{if(size>8*1024*1024)throw new Error('录音过长，请缩短后重试。');const audio=new Uint8Array(await new Blob(chunks,{type:'audio/webm'}).arrayBuffer());chunks.length=0;if(currentRecorder.discard||epoch!==mediaEpoch||closing)return;const result=await service('transcribe',{audio,mimeType:'audio/webm'});if(epoch!==mediaEpoch||closing)return;$('#chat-text').value=result.text;show('识别完成。请检查文字后发送。');});},{once:true});
+  recorder.addEventListener('stop',()=>{if(recorder===currentRecorder){recorder=null;clearTimeout(recordingTimer);recordingTimer=null;$('#voice-input').textContent='按下开始录音';}stream.getTracks().forEach(track=>track.stop());if(currentRecorder.discard||epoch!==mediaEpoch||closing)return;void invoke(async()=>{if(size>8*1024*1024)throw new Error('录音过长，请缩短后重试。');const audio=new Uint8Array(await new Blob(chunks,{type:'audio/webm'}).arrayBuffer());chunks.length=0;if(currentRecorder.discard||epoch!==mediaEpoch||closing)return;const result=await service('transcribe',{audio,mimeType:'audio/webm'});if(epoch!==mediaEpoch||closing)return;$('#chat-text').value=result.text;chatDraftRevision++;show('识别完成。请检查文字后发送。');});},{once:true});
   try{currentRecorder.start(250);}catch(error){currentRecorder.discard=true;stream.getTracks().forEach(track=>track.stop());if(recorder===currentRecorder)recorder=null;throw error;}
   recordingTimer=setTimeout(()=>{if(currentRecorder.state==='recording')currentRecorder.stop();},60000);$('#voice-input').textContent='停止录音（最长 60 秒）';
 }));
@@ -212,7 +223,7 @@ all('[data-export]').forEach(el=>el.addEventListener('click',()=>void invoke(asy
 $('#import-preferences').addEventListener('change',()=>void invoke(async()=>{const file=$('#import-preferences').files[0];if(!file)return;if(file.size>65536)throw new Error('偏好文件过大。');await command('preferences.import',{data:JSON.parse(await file.text())});show('偏好已导入，私人数据未改变。');}));
 for(const [id,enabled]of[['enable-autostart',true],['disable-autostart',false]])$('#'+id).addEventListener('click',()=>void invoke(async()=>{await api.autostart(enabled);show(enabled?'已启用开机启动。':'已关闭开机启动。');}));
 for(const [id,enabled]of[['enable-web-return',true],['disable-web-return',false]])$('#'+id).addEventListener('click',()=>void invoke(async()=>{const result=await api.registerDeepLink(enabled);show(result.enabled?'已启用网页中的“回桌面”入口。':'已关闭网页唤起入口。');}));
-$('#bridge-toggle').addEventListener('click',()=>void invoke(async()=>{bridge=await api.taskBridge(!bridge.enabled);$('#bridge-toggle').textContent=bridge.enabled?'关闭本机任务桥':'开启本机任务桥';$('#bridge-help').textContent=bridge.enabled?`POST http://127.0.0.1:${bridge.port}/events\nAuthorization: Bearer ${bridge.token}\nContent-Type: application/json\n\n${JSON.stringify({eventId:'build-1',taskId:'my-project',status:'completed',title:'项目构建',text:'构建完成'},null,2)}\n\n令牌只在本机显示，重启或关闭后失效。`:'事件桥已关闭。';}));
+$('#bridge-toggle').addEventListener('click',()=>void invoke(async()=>{const toggle=$('#bridge-toggle');toggle.disabled=true;try{renderBridge(await api.taskBridge(!bridge.enabled));}finally{if(!closing)toggle.disabled=false;}}));
 function stopGame(message=''){clearInterval(gameTimer);gameTimer=null;gameTicks=0;$('#catch-star').hidden=true;$('#star-game').disabled=false;$('#game-status').textContent=message;}
 $('#star-game').addEventListener('click',()=>void invoke(async()=>{if(companion.focus.status==='running')throw new Error('专注中先保持安静，暂停后再玩吧。');stopGame();score=0;gameTicks=10;$('#catch-star').hidden=false;$('#star-game').disabled=true;$('#game-status').textContent='接住星星 · 10 秒';gameTimer=setInterval(()=>{gameTicks--;$('#game-status').textContent=`${gameTicks} 秒 · 接住 ${score} 次`;if(gameTicks<=0){stopGame(`接住 ${score} 次，下次再玩。`);void invoke(()=>command('interaction',{kind:'play'}));}},1000);}));
 $('#catch-star').addEventListener('click',()=>{score++;$('#catch-star').style.right=`${Math.round(Math.random()*70)}%`;$('#game-status').textContent=`${gameTicks} 秒 · 接住 ${score} 次`;});
@@ -223,7 +234,7 @@ $('#editor-dialog').addEventListener('close',()=>{editor?.destroy();editor=null;
 $('#import-backup').addEventListener('change',()=>void invoke(async()=>{restoreData=null;const file=$('#import-backup').files[0];if(!file)return;if(file.size>MAX_COMPANION_BYTES)throw new Error('备份不能超过 4 MiB。');const data=JSON.parse(await file.text());const result=await api.restoreBackup({action:'preview',data});restoreData=data;const summary=result.summary||result;$('#restore-summary').textContent=`待办 ${summary.todos} 条 · 记忆 ${summary.memories} 条 · 消息 ${summary.notifications} 条\n陪伴等级 ${summary.level} · 恢复后专注${summary.focusPaused?'暂停':'保持原状态'}\n修复或丢弃 ${summary.discarded?.total||0} 条记录\n${(summary.warnings||[]).join('\n')}\n确认后将替换当前陪伴资料，并先在本机保存恢复前的旧档。AI 密钥不在此次恢复范围；人设变化会清空当前对话会话。`;$('#restore-dialog').showModal();}));
 $('#cancel-restore').addEventListener('click',()=>$('#restore-dialog').close());
 $('#restore-dialog').addEventListener('close',()=>{restoreData=null;$('#import-backup').value='';});
-$('#confirm-restore').addEventListener('click',()=>void invoke(async()=>{if(!restoreData)return;$('#confirm-restore').disabled=true;try{await api.restoreBackup({action:'restore',data:restoreData});profileRendered=false;lastTodoOptions='';receive(await api.companionState());$('#restore-dialog').close();show('备份已恢复。恢复前的旧档保留在本机数据目录。');}finally{$('#confirm-restore').disabled=false;}}));
+$('#confirm-restore').addEventListener('click',()=>void invoke(async()=>{if(!restoreData)return;$('#confirm-restore').disabled=true;try{await api.restoreBackup({action:'restore',data:restoreData});resetRecordEditors();profileRendered=false;lastTodoOptions='';receive(await api.companionState());$('#restore-dialog').close();show('备份已恢复。恢复前的旧档保留在本机数据目录。');}finally{$('#confirm-restore').disabled=false;}}));
 ambience=mountAmbience({root:$('#ambience-root'),onLevel:level=>{if(!closing&&api.rhythm)void api.rhythm(level).catch(()=>{});}});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){stopGame('已暂停');if(streamFrame)cancelAnimationFrame(streamFrame);streamFrame=null;}else flushStream();updateCountdown();});
 $('#focus-minutes').addEventListener('input',updateCountdown);

@@ -165,5 +165,42 @@ try {
     return {writes, stored: localStorage.getItem('qa.destroy.file'), sound: demoGuide.getPreferences().sound, widgets: document.querySelectorAll('[data-andromeda]').length};
   });
   equal(delayedImport, {writes: 0, stored: null, sound: false, widgets: 0});
+  // Async SDK mounting must respect an input which was focused before it loaded.
+  await custom.evaluate(async () => {
+    const field = document.createElement('input'); field.id = 'initial-focus-fixture'; document.body.prepend(field); field.focus();
+    window.demoGuide = (await import('/web/andromeda.mjs')).mountAndromeda({characterPackUrl: '/__fixtures/character.json', storageKey: 'qa.initial.focus', tour: [{selector: '#reading-fixture', title: '第一站', text: '阅读区'}, {selector: '#reading-fixture', title: '第二站', text: '结束'}]});
+    await demoGuide.ready;
+  });
+  equal(await custom.locator('[data-andromeda] .character').isHidden(), true); equal(await custom.locator('[data-andromeda] .restore').isVisible(), true);
+  await custom.evaluate(() => document.querySelector('#initial-focus-fixture').blur()); await custom.locator('[data-andromeda] .character').waitFor();
+  await custom.evaluate(() => demoGuide.open());
+  await custom.getByLabel('导入偏好文件').setInputFiles({name: 'preferences.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({schema: 'andromeda.preferences/v1', preferences: {visualStyle: 'studio', theme: 'dawn', motion: 'still', reducedMotion: true}}))});
+  await custom.locator('[data-andromeda] canvas[data-studio-state=ready]').waitFor();
+  equal(await custom.locator('[data-andromeda] canvas').getAttribute('data-visual-style'), 'studio'); equal(await custom.locator('[data-andromeda] .pet').getAttribute('data-theme'), 'dawn');
+  equal(await custom.getByLabel('动作频率', {exact: true}).inputValue(), 'still');
+  await custom.getByRole('button', {name: '带我逛逛'}).click(); equal(await custom.getByRole('button', {name: '下一站', exact: true}).evaluate(node => node.getRootNode().activeElement === node), true);
+  await custom.keyboard.press('Enter'); equal(await custom.getByRole('button', {name: '完成导览', exact: true}).evaluate(node => node.getRootNode().activeElement === node), true);
+  await custom.keyboard.press('Escape'); equal(await custom.getByRole('dialog').isHidden(), true); equal(await custom.locator('[data-andromeda] .highlight').isHidden(), true);
+
+  const soundPage = await browser.newPage({viewport: {width: 1000, height: 800}}); soundPage.on('pageerror', error => errors.push(error.message));
+  await soundPage.goto(base + '/web/demo.html'); await soundPage.evaluate(() => demoGuide.ready);
+  await soundPage.evaluate(() => {
+    const Original = AudioContext; window.AudioContext = class extends Original { constructor(...args) { super(...args); window.qaAudio = this; } };
+    const create = Original.prototype.createOscillator; window.qaOscillators = 0; Original.prototype.createOscillator = function() { qaOscillators++; return create.call(this); };
+    const trigger = document.createElement('button'); trigger.id = 'qa-chime'; trigger.textContent = '声音回归'; trigger.style.cssText = 'position:fixed;left:10px;top:10px;z-index:2147483001';
+    trigger.addEventListener('click', () => demoGuide.say('声音回归', {force: true})); document.body.append(trigger); demoGuide.open();
+  });
+  await soundPage.getByLabel('提示音（默认关闭）', {exact: true}).check(); await soundPage.waitForFunction(() => qaAudio.state === 'running');
+  await soundPage.locator('#qa-chime').click(); await soundPage.waitForFunction(() => qaOscillators === 1);
+  await soundPage.evaluate(() => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => true}); document.dispatchEvent(new Event('visibilitychange')); });
+  await soundPage.waitForFunction(() => qaAudio.state === 'suspended');
+  await soundPage.evaluate(() => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => false}); document.dispatchEvent(new Event('visibilitychange')); });
+  equal(await soundPage.evaluate(() => [qaAudio.state, qaOscillators]), ['suspended', 1]);
+  await soundPage.locator('#qa-chime').click(); await soundPage.waitForFunction(() => qaOscillators === 2);
+  equal(await soundPage.evaluate(() => qaAudio.state), 'running');
+  // An unlock which completes after destroy must not create audio or UI again.
+  await soundPage.evaluate(async () => { await qaAudio.suspend(); const resume = qaAudio.resume.bind(qaAudio); qaAudio.resume = () => new Promise((resolve, reject) => { window.qaReleaseAudio = () => resume().then(resolve, reject); }); });
+  await soundPage.locator('#qa-chime').click(); await soundPage.evaluate(() => { demoGuide.destroy(); qaReleaseAudio(); }); await soundPage.waitForTimeout(30);
+  equal(await soundPage.evaluate(() => [qaAudio.state, qaOscillators, document.querySelectorAll('[data-andromeda]').length]), ['closed', 2, 0]); await soundPage.close();
   equal(errors, []); console.log(`Web browser QA passed: ${checks} assertions; qa/web-desktop.png, qa/web-mobile.png`);
 } finally { if (browser) await browser.close(); await new Promise(done => server.close(done)); }

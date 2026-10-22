@@ -549,7 +549,9 @@ function showCompanion() {
     minWidth: Math.min(640, area.width), minHeight: Math.min(540, area.height), title: '星璇 · 陪伴空间', icon: ICON_PATH,
     backgroundColor: '#101624', show: false, webPreferences: webPreferences()});
   secureWindow(companionWindow);
-  companionWindow.once('ready-to-show', () => { if (!quitting && !paused() && isAlive(companionWindow)) companionWindow.show(); });
+  companionWindow.once('ready-to-show', () => {
+    if (!quitting && !pauses.has('locked') && !pauses.has('suspended') && isAlive(companionWindow)) companionWindow.show();
+  });
   const current = companionWindow;
   companionWindow.on('show', () => {void companionHost?.state().then(value => {
     if (!quitting && isAlive(current) && current === companionWindow && current.isVisible()) current.webContents.send('andromeda:companion', value);
@@ -694,14 +696,16 @@ function registerIPC() {
   handle('andromeda:character',async()=>{await characterReady;return characterStore?.snapshot()||null;});
   privateHandle('andromeda:install-character',async action=>{
     if(!['import','clear'].includes(action))throw new TypeError('未知的角色操作');
-    await characterReady;
-    if(action==='clear')await characterStore.clear();
-    else{
+    // Reserve the user's operation before awaiting the picker or disk reads.
+    // Store loading/imports/clears share one FIFO, so later choices win.
+    const operation=action==='clear'?characterStore.clear():characterStore.installFrom(async()=>{
       const result=await dialog.showOpenDialog(companionWindow,{title:'导入并使用角色包',properties:['openFile'],filters:[{name:'星璇编辑器角色包',extensions:['zip']}]});
-      if(result.canceled||result.filePaths.length!==1)return {cancelled:true};
+      if(result.canceled||result.filePaths.length!==1)return null;
       const file=result.filePaths[0];if((await fs.stat(file)).size>12*1024*1024)throw new Error('角色包不能超过 12 MiB');
-      await characterStore.install(await fs.readFile(file));
-    }
+      return fs.readFile(file);
+    });
+    const result=await operation;
+    if(result?.cancelled)return {cancelled:true};
     const current=characterStore.snapshot();
     if(isAlive(petWindow))petWindow.webContents.send('andromeda:character',current);
     return {name:current?.pack.name||null};

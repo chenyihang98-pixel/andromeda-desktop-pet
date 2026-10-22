@@ -59,7 +59,15 @@ function updatePublic(state) { if (!state) return;
   if(adornment.hidden!==hidden)adornment.hidden=hidden;if(adornment.textContent!==text)adornment.textContent=text;if(adornment.title!==title)adornment.title=title;
 }
 async function interact(kind) {try {await api?.interact?.(kind);} catch {bubble.textContent='这次没有响应，再试一次吧。';bubble.hidden=false;}}
+function finishInteraction({pointerId,cancelled,paused}) {
+  if(!pointer||pointer.id!==pointerId)return;
+  const click=!pointer.moved&&!cancelled,held=performance.now()-pointer.time;pointer=null;
+  scheduler.setContext({dragging:false,paused:paused||hostPaused||document.hidden});
+  refresh();
+  if(click&&performance.now()-lastInteraction>1200){lastInteraction=performance.now();void interact(held>700?'thanks':'pet');}
+}
 window.andromedaEnhancements = {
+  finishDrag:finishInteraction,
   busy:()=>scheduler.isActive(),
   reduced:()=>Boolean(publicState?.preferences?.reducedMotion),
   gaze:(x,y)=>{if(!custom)return false;if(!activeId&&!surfacePaused)custom.gaze(x,y);return true;},
@@ -78,7 +86,7 @@ window.andromedaEnhancements = {
     const canvas=value.canvas;
     // Only opaque character pixels count as a touch. This does not enable OS click-through.
     canvas.addEventListener('pointerdown',event=>{
-      if(event.button!==0)return;
+      if(event.button!==0||pointer)return;
       const rect=canvas.getBoundingClientRect(),x=Math.floor((event.clientX-rect.left)*canvas.width/rect.width),y=Math.floor((event.clientY-rect.top)*canvas.height/rect.height);
       if(x<0||y<0||x>=canvas.width||y>=canvas.height)return;
       const opaque=custom?custom.hitTest(x*pose.width/canvas.width,y*pose.height/canvas.height):publicState?.preferences?.visualStyle==='studio'&&!pose.hidden
@@ -86,19 +94,9 @@ window.andromedaEnhancements = {
         : canvas.getContext('2d').getImageData(x,y,1,1).data[3]>16;
       if(!opaque){event.stopImmediatePropagation();return;}
       pointer={id:event.pointerId,x:event.clientX,y:event.clientY,time:performance.now(),moved:false};
-      scheduler.setContext({dragging:true});bubble.hidden=true;displayPose('drag');
+      scheduler.setContext({dragging:true});displayPose('drag');refresh();
     },true);
     canvas.addEventListener('pointermove',event=>{if(pointer?.id===event.pointerId&&Math.hypot(event.clientX-pointer.x,event.clientY-pointer.y)>5)pointer.moved=true;});
-    const finish=(event,cancelled=false)=>{
-      if(!pointer || (event.pointerId!==undefined&&pointer.id!==event.pointerId))return;
-      const click=!pointer.moved&&!cancelled,held=performance.now()-pointer.time;pointer=null;
-      scheduler.setContext({dragging:false});surfacePaused=false;displayPose(basePose(),true);refresh();
-      if(click&&performance.now()-lastInteraction>1200){lastInteraction=performance.now();void interact(held>700?'thanks':'pet');}
-    };
-    canvas.addEventListener('pointerup',event=>finish(event),true);
-    for(const name of ['pointercancel','lostpointercapture'])canvas.addEventListener(name,event=>finish(event,true));
-    window.addEventListener('blur',event=>finish(event,true));
-    document.addEventListener('contextmenu',event=>finish(event,true));
     api?.onEvent?.(event=>{try{scheduler.enqueue({...event,durationMs:4000});refresh();}catch{}});
     api?.onPublic?.(updatePublic);api?.onCharacter?.(value=>{void applyCustom(value);});if(api?.getCharacter)void api.getCharacter().then(applyCustom).catch(()=>{});displayPose('idle');refresh();
     api?.onRhythm?.(level=>{const amount=reduced.matches||publicState?.preferences.reducedMotion||pointer?0:Math.min(1,Math.max(0,Number(level)||0));document.body.style.setProperty('--rhythm-y',`${-2*amount}px`);});

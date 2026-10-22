@@ -1,10 +1,11 @@
 import {chromium} from 'playwright-core';
 import {createServer} from 'node:http';
-import {readFile, mkdir} from 'node:fs/promises';
+import {readFile, mkdir, writeFile} from 'node:fs/promises';
 import {resolve, extname, relative, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import {findChromium} from '../scripts/ui-browser.mjs';
+import {PNG} from 'pngjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 if (!process.argv[2]) throw new Error('请提供待验收的网站构建目录：node web/verify-site.mjs ../site-project/dist');
 const root = resolve(process.argv[2]);
@@ -70,6 +71,23 @@ try {
   const before = await model.screenshot(), box = await model.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 20, {steps: 8}); await page.mouse.up();
   equal(before.equals(await model.screenshot()), false);
+  // Let the final dragged frame reach the compositor before comparing recovery.
+  await page.waitForTimeout(100);
+  const litBefore = await model.screenshot();
+  await model.evaluate(canvas => { window.qaModelCanvas = canvas; window.qaContext = canvas.getContext('webgl2').getExtension('WEBGL_lose_context'); qaContext.loseContext(); });
+  await page.waitForFunction(() => !document.querySelector('[data-model]').classList.contains('is-ready'));
+  await page.evaluate(() => qaContext.restoreContext()); await page.locator('[data-model].is-ready canvas').first().waitFor();
+  const litAfter = await model.screenshot(), original = PNG.sync.read(litBefore), restored = PNG.sync.read(litAfter);
+  equal([restored.width, restored.height], [original.width, original.height]);
+  let difference = 0; for (let i = 0; i < original.data.length; i += 4) for (let channel = 0; channel < 3; channel++) difference += Math.abs(original.data[i + channel] - restored.data[i + channel]);
+  const meanDifference = difference / (original.width * original.height * 3);
+  await writeFile(resolve(repo, 'qa/webgl-before-restore.png'), litBefore); await writeFile(resolve(repo, 'qa/webgl-after-restore.png'), litAfter);
+  assert.ok(meanDifference < .75, `WebGL restore must preserve lighting, mean RGB error ${meanDifference}`); checks++;
+  console.log(`WebGL context restoration mean RGB error: ${meanDifference.toFixed(4)}`);
+  // Request a real asynchronous restore, then destroy before its event completes.
+  await page.evaluate(() => qaContext.loseContext()); await page.waitForFunction(() => !document.querySelector('[data-model]').classList.contains('is-ready'));
+  await page.evaluate(() => { qaContext.restoreContext(); dispatchEvent(new PageTransitionEvent('pagehide', {persisted: false})); }); await page.waitForTimeout(200);
+  equal(await page.locator('[data-model].is-ready,[data-model] canvas,[data-andromeda]').count(), 0);
   // Import/loading can finish after pagehide: neither companion nor 3D/demos may reappear.
   const late = await browser.newPage({viewport: {width: 1440, height: 1000}});
   let release, started; const gate = new Promise(done => { release = done; }), requested = new Promise(done => { started = done; });

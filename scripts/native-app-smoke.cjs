@@ -8,6 +8,9 @@ app.setPath('appData',path.join(qa,`native-profile-${process.pid}`));
 const builtAsar=process.argv.includes('--asar');
 const reportName=builtAsar?'native-asar-smoke.json':'native-app-smoke.json';
 const result={scope:builtAsar?'built-asar-loaded-by-repository-electron':'actual-electron-app-on-current-windows-display',checks:[],limitations:['No real model/voice provider calls','No physical lock/suspend, mixed-DPI or monitor removal','No screenshot of other applications','Native file pickers are stubbed; archive persistence and renderer are real'],errors:[]};
+const startedAt=Date.now();result.steps=[];
+function progress(name){result.stage=name;result.steps.push({name,elapsedMs:Date.now()-startedAt});console.log('Native smoke: '+name);}
+async function step(name,operation){progress(name);let timeout;try{return await Promise.race([Promise.resolve().then(operation),new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error(name+' timed out')),8000);})]);}finally{clearTimeout(timeout);}}
 const deadline=setTimeout(()=>{result.errors.push('probe timed out');finish(1);},45000);
 function finish(code){clearTimeout(deadline);result.passed=code===0;fs.writeFileSync(path.join(qa,reportName),JSON.stringify(result,null,2));console.log(JSON.stringify({passed:result.passed,checks:result.checks.length,errors:result.errors,report:'qa/'+reportName}));app.exit(code);}
 async function until(test){for(let i=0;i<150;i++){if(await test())return;await new Promise(r=>setTimeout(r,100));}throw new Error('UI readiness timed out');}
@@ -29,6 +32,23 @@ app.whenReady().then(async()=>{
     let panel;await until(()=>{panel=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/companion.html'));return panel&&!panel.webContents.isLoading();});
     await until(()=>panel.webContents.executeJavaScript("document.querySelector('#hello').textContent.includes('你好，你')"));
     check((await panel.webContents.executeJavaScript('window.andromeda.companionState()')).companion.scope==='owner','private owner panel loads');
+    const startedBridge=await step('start private task bridge',()=>panel.webContents.executeJavaScript('window.andromeda.taskBridge(true)'));
+    const oldPanel=panel,oldPanelId=panel.id;
+    // close() only requests renderer shutdown. Wait for closed so showCompanion
+    // cannot select the closing window and executeJavaScript cannot await its dead renderer.
+    await step('close private panel',()=>new Promise(done=>{oldPanel.once('closed',done);oldPanel.close();}));
+    await step('reopen private panel',()=>pet.webContents.executeJavaScript('window.andromeda.showCompanion()'));
+    progress('locate reopened private panel');
+    await until(()=>{panel=BrowserWindow.getAllWindows().find(w=>w.id!==oldPanelId&&w.webContents.getURL().endsWith('/companion.html'));return panel&&!panel.webContents.isLoading();});
+    result.privatePanelIds={closed:oldPanelId,reopened:panel.id};
+    await step('restore bridge controls in reopened panel',()=>until(()=>panel.webContents.executeJavaScript("document.querySelector('#bridge-toggle').textContent==='关闭本机任务桥'")));
+    const restoredBridge=(await panel.webContents.executeJavaScript('window.andromeda.companionState()')).bridge;
+    check(restoredBridge.running&&restoredBridge.token===startedBridge.token&&restoredBridge.port===startedBridge.port,'reopened private panel restores existing task bridge without restarting');
+    check(await panel.webContents.executeJavaScript('document.querySelector("#bridge-help").textContent.includes('+JSON.stringify(startedBridge.token)+')'),'reopened panel displays current private bridge credentials');
+    check(!JSON.stringify(await pet.webContents.executeJavaScript('window.andromeda.getState()')).includes(startedBridge.token),'public pet snapshot excludes bridge credentials');
+    await panel.webContents.executeJavaScript("document.querySelector('#bridge-toggle').click()");
+    await until(()=>panel.webContents.executeJavaScript("document.querySelector('#bridge-toggle').textContent==='开启本机任务桥'&&!document.querySelector('#bridge-toggle').disabled"));
+    check(!(await panel.webContents.executeJavaScript('window.andromeda.companionState()')).bridge.running,'reopened bridge stops with a single click');
     check(await panel.webContents.executeJavaScript("document.querySelector('.hero-pet').complete&&document.querySelector('.hero-pet').naturalWidth>0"),'visible artwork loads over the local CSP protocol');
     await panel.webContents.executeJavaScript("window.andromeda.command({type:'todo.add',text:'原生运行验收提醒',dueAt:Date.now()})");
     await until(()=>pet.webContents.executeJavaScript("!document.querySelector('#bubble').hidden"));check(true,'passive semantic bubble reaches real pet renderer');

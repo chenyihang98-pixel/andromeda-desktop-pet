@@ -57,6 +57,8 @@ try{
   await page.locator('#pet').dblclick({position:{x:120,y:130}});ok((await page.evaluate(()=>window.calls)).includes('settings'),true);
   await page.mouse.move(120,130);await page.mouse.down();await page.mouse.move(130,140);await page.mouse.up();
   const calls=await page.evaluate(()=>window.calls);for(const name of ['drag-start','drag','drag-end'])ok(calls.includes(name),true);
+  // Dragging now resumes the still-active greeting; gaze only takes over after its deadline.
+  await page.clock.runFor(2400);
   await page.evaluate(()=>window.andromeda.setSettings({gaze:true}));await page.mouse.move(230,130);
   ok(await page.locator('#pet').getAttribute('data-row'),'9');ok(await page.locator('#pet').getAttribute('data-column'),'4');
   await page.evaluate(()=>window.andromeda.setSettings({gaze:false,motion:'still'}));await page.clock.runFor(120000);
@@ -159,6 +161,42 @@ try{
     await resumePage.clock.runFor(220);ok(await resumePage.locator('#pet').getAttribute('data-column'),'1');
     await resumePage.clock.runFor(4000);ok(await resumePage.locator('#bubble').isHidden(),true);
     ok(await resumePage.evaluate(()=>window.andromedaEnhancements.busy()),false);
+  }
+  for(const finish of ['release','cancel','blur','contextmenu','hidden']){
+    const gesturePage=await browser.newPage({viewport:{width:240,height:260}});await setup(gesturePage);gesturePage.on('pageerror',e=>errors.push(e.message));
+    await gesturePage.addInitScript(()=>{window.appState.settings.motion='still';window.andromeda.onEvent=fn=>window.eventCallback=fn;});
+    await gesturePage.clock.install();await gesturePage.goto(base+'/src/pet.html');await gesturePage.locator('#pet[data-row="0"]').waitFor();
+    await gesturePage.evaluate(()=>window.eventCallback({id:'gesture-task',kind:'task',action:'greet',text:'拖动后继续提示',priority:60}));
+    await gesturePage.clock.runFor(220);
+    const point=await gesturePage.evaluate(()=>{
+      const canvas=document.querySelector('#pet'),rect=canvas.getBoundingClientRect(),pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+      canvas.addEventListener('pointerdown',event=>window.gesturePointer=event.pointerId,{once:true});
+      for(let y=40;y<170;y++)for(let x=30;x<160;x++)if(pixels[(y*canvas.width+x)*4+3]>200)return{x:rect.left+(x+.5)*rect.width/canvas.width,y:rect.top+(y+.5)*rect.height/canvas.height};
+      throw new Error('No opaque gesture point');
+    });
+    await gesturePage.mouse.move(point.x,point.y);await gesturePage.mouse.down();await gesturePage.mouse.move(point.x+12,point.y);await gesturePage.clock.runFor(100);
+    ok(await gesturePage.locator('#bubble').isHidden(),true);
+    if(finish==='release')await gesturePage.mouse.up();
+    else{
+      await gesturePage.evaluate(finish=>{
+        if(finish==='cancel')document.querySelector('#pet').dispatchEvent(new PointerEvent('pointercancel',{pointerId:window.gesturePointer,bubbles:true}));
+        if(finish==='blur')window.dispatchEvent(new Event('blur'));
+        if(finish==='contextmenu')document.dispatchEvent(new Event('contextmenu'));
+        if(finish==='hidden'){window.qaHidden=true;Object.defineProperty(document,'hidden',{configurable:true,get:()=>window.qaHidden});document.dispatchEvent(new Event('visibilitychange'));}
+      },finish);
+      await gesturePage.mouse.up();
+    }
+    if(finish==='hidden'){
+      await gesturePage.clock.runFor(3000);ok(await gesturePage.locator('#bubble').isHidden(),true);ok(await gesturePage.evaluate(()=>window.andromedaEnhancements.busy()),true);
+      await gesturePage.evaluate(()=>{window.qaHidden=false;document.dispatchEvent(new Event('visibilitychange'));});
+    }
+    // A native position-save notification after release must not restart/erase the resumed action.
+    await gesturePage.evaluate(()=>window.stateCallback(window.appState));
+    ok(await gesturePage.locator('#pet').getAttribute('data-row'),'3');ok(await gesturePage.locator('#pet').getAttribute('data-column'),'0');
+    ok(await gesturePage.locator('#bubble').isVisible(),true);ok(await gesturePage.locator('#bubble').textContent(),'拖动后继续提示');
+    await gesturePage.clock.runFor(220);ok(await gesturePage.locator('#pet').getAttribute('data-column'),'1');
+    await gesturePage.clock.runFor(4000);ok(await gesturePage.evaluate(()=>window.andromedaEnhancements.busy()),false);ok(await gesturePage.locator('#bubble').isHidden(),true);
+    await gesturePage.close();
   }
   ok(errors,[]);
   console.log(`Browser renderer QA passed: ${checks} assertions. Screenshots: qa/pet-neutral.png, qa/pet-wave.png, qa/settings.png, qa/dock-left.png, qa/dock-top.png`);

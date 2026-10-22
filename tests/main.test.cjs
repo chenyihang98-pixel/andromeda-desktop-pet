@@ -19,14 +19,14 @@ async function createShell(t, {
   saved = null, deferReady = false, ignoreMouseFails = false, nativeMinimumSize = null,
   platform = 'win32', fullscreenHelperExists = true, packaged = false,
   screenToDipPoint = (point) => ({ ...point }),
-  captureSources,
+  captureSources, openDialog, readFileImpl,
 } = {}) {
   const { EventEmitter } = require('node:events');
   const Module = require('node:module');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'andromeda-shell-'));
   const windows = [];
   const menus = [], trays = [], popups = [], externalURLs = [], fullscreenMonitors = [], companionHosts = [];
-  const captureCalls = [], saveDialogs = [];
+  const captureCalls = [], saveDialogs = [], openDialogs = [];
   let now = 1_000_000, serial = 0;
   const timers = new Map();
   const schedule = (fn, delay, interval = false) => {
@@ -165,7 +165,10 @@ async function createShell(t, {
   const fakeElectron = {
     app, BrowserWindow: FakeWindow, Tray: FakeTray, screen, ipcMain, powerMonitor,
     shell: { openExternal: async (url) => { externalURLs.push(url); } },
-    nativeImage: { createFromPath: () => image },
+    nativeImage: { createFromPath: () => image, createFromBuffer(bytes) {
+      const png = require('pngjs').PNG.sync.read(bytes);
+      return {isEmpty: () => false, getSize: () => ({width: png.width, height: png.height})};
+    } },
     Menu: { setApplicationMenu() {}, buildFromTemplate(items) { menus.push(items); return { items, popup(options) { popups.push(options); } }; } },
     session: { defaultSession, fromPartition: () => desktopSession },
     protocol: { registerSchemesAsPrivileged() {} },
@@ -176,6 +179,7 @@ async function createShell(t, {
         thumbnail: { isEmpty: () => false, toDataURL: () => 'data:image/png;base64,cG5n' } }];
     } },
     dialog: { showErrorBox(_title, message) { throw new Error(message); },
+      async showOpenDialog(window, options) { openDialogs.push({window, options}); return openDialog ? openDialog(window, options) : {canceled: true, filePaths: []}; },
       async showSaveDialog(window, options) { saveDialogs.push({window, options}); return {canceled: true}; } },
   };
   const entry = require.resolve('../src/main.cjs');
@@ -188,6 +192,7 @@ async function createShell(t, {
     : path.resolve(path.dirname(entry), '..', 'dist', 'native', 'windows-fullscreen.exe');
   const entryRequire = (name) => {
     if (name === 'electron') return fakeElectron;
+    if (name === 'node:fs/promises' && readFileImpl) return {...localRequire(name), readFile: readFileImpl};
     if (name === 'node:fs') return {
       ...fs, existsSync: (file) => file === helperPath ? fullscreenHelperExists : fs.existsSync(file),
     };
@@ -235,7 +240,7 @@ async function createShell(t, {
   return {
     app, windows, menus, trays, popups, handlers, eventFor, invoke, ipcMain,
     screen, powerMonitor, desktopSession, clock, externalURLs, folder: app.getPath('userData'),
-    fullscreenMonitors, fullscreenHelperPath: helperPath, captureCalls, saveDialogs,
+    fullscreenMonitors, fullscreenHelperPath: helperPath, captureCalls, saveDialogs, openDialogs,
     send: (channel, ...args) => ipcMain.emit(`andromeda:${channel}`, eventFor(windows[0]), ...args),
     state: () => invoke(windows[0], 'get-state'),
     saved: () => JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')),
@@ -1203,6 +1208,86 @@ async function openOwner(shell) {
   return owner;
 }
 
+test('first companion open during fullscreen suppression is visible without restoring the pet', async t => {
+  const shell = await createShell(t), pet = shell.windows[0];
+  shell.invoke(pet, 'set-settings', {autoHideFullscreen: true});
+  shell.fullscreenMonitors[0].snapshot(primary.bounds);
+  const owner = await openOwner(shell);
+  assert.equal(owner.visible, true);
+  assert.equal(pet.visible, false);
+  assert.equal(shell.state().fullscreenSuppressed, true);
+  assert.equal(shell.state().settings.autoHideFullscreen, true);
+  shell.fullscreenMonitors[0].snapshot(null);
+  assert.equal(owner.visible, true);
+});
+
+test('pending companion readiness still respects lock, suspend and quit', async t => {
+  for (const reason of ['lock-screen', 'suspend', 'quit']) {
+    const shell = await createShell(t, {deferReady: true});
+    shell.windows[0].ready();
+    const owner = await openOwner(shell);
+    if (reason === 'quit') shell.app.quit(); else shell.powerMonitor.emit(reason);
+    owner.ready();
+    assert.equal(owner.visible, false, reason);
+  }
+});
+
+async function smallCharacterArchive(id) {
+  const {createCharacterArchive} = require('../src/services/character-archive.cjs');
+  const png = require('pngjs').PNG.sync.write({width: 2, height: 2, data: Buffer.alloc(16, 255)});
+  const pack = {schema: 'andromeda.character/v1', id, name: id, version: '1',
+    source: {kind: 'original', author: 'Test', license: 'Test only', reference: 'Synthetic fixture'},
+    atlas: {image: 'atlas.png', width: 2, height: 2, columns: 1, rows: 1, cellWidth: 2, cellHeight: 2},
+    neutral: {row: 0, column: 0}, animations: {idle: {row: 0, frameCount: 1, durationsMs: [100]}}};
+  return (await createCharacterArchive({pack}, {originalImage: png})).archive;
+}
+
+test('a character clear requested while the earlier file picker is open remains the final choice', async t => {
+  let finishPicker, reportOpened;
+  const opened = new Promise(resolve => {reportOpened = resolve;});
+  const shell = await createShell(t, {openDialog: () => new Promise(resolve => {finishPicker = resolve; reportOpened();})});
+  const owner = await openOwner(shell), file = path.join(shell.folder, 'selected.zip');
+  fs.writeFileSync(file, await smallCharacterArchive('early-picker'));
+  const importing = shell.invoke(owner, 'install-character', 'import');
+  await opened;
+  let clearDone = false;
+  const clearing = shell.invoke(owner, 'install-character', 'clear').then(value => {clearDone = true; return value;});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(clearDone, false, 'The later clear must not pass an earlier pending picker');
+  finishPicker({canceled: false, filePaths: [file]});
+  await Promise.all([importing, clearing]);
+  assert.equal(await shell.invoke(shell.windows[0], 'character'), null);
+  assert.equal(fs.existsSync(path.join(shell.folder, 'custom-character.zip')), false);
+  assert.equal(shell.windows[0].webContents.sent.filter(item => item.channel === 'andromeda:character').at(-1).value, null);
+});
+
+test('character IPC preserves invocation order through file reads, later import and cancellation', async t => {
+  let finishRead, reportRead, earlyFile, latestFile;
+  const reading = new Promise(resolve => {reportRead = resolve;});
+  const blockedRead = new Promise(resolve => {finishRead = resolve;});
+  let picks = 0;
+  const shell = await createShell(t, {
+    openDialog: () => ++picks < 3 ? {canceled: false, filePaths: [picks === 1 ? earlyFile : latestFile]} : {canceled: true, filePaths: []},
+    readFileImpl: async (file, ...args) => {if (file === earlyFile) {reportRead(); await blockedRead;} return fs.promises.readFile(file, ...args);},
+  });
+  const owner = await openOwner(shell);
+  earlyFile = path.join(shell.folder, 'early.zip'); latestFile = path.join(shell.folder, 'latest.zip');
+  fs.writeFileSync(earlyFile, await smallCharacterArchive('early-read'));
+  fs.writeFileSync(latestFile, await smallCharacterArchive('latest-choice'));
+  const early = shell.invoke(owner, 'install-character', 'import');
+  await reading;
+  const clearing = shell.invoke(owner, 'install-character', 'clear');
+  const latest = shell.invoke(owner, 'install-character', 'import');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(picks, 1, 'The later picker waits for earlier operations to finish');
+  finishRead(); await Promise.all([early, clearing, latest]);
+  assert.equal((await shell.invoke(shell.windows[0], 'character')).pack.id, 'latest-choice');
+  const {readCharacterArchive} = require('../src/services/character-archive.cjs');
+  assert.equal((await readCharacterArchive(fs.readFileSync(path.join(shell.folder, 'custom-character.zip')))).pack.id, 'latest-choice');
+  assert.deepEqual(await shell.invoke(owner, 'install-character', 'import'), {cancelled: true});
+  assert.equal((await shell.invoke(shell.windows[0], 'character')).pack.id, 'latest-choice');
+});
+
 const privateOperations = [
   ['companion-state'],
   ['companion-command', {type: 'todo.add', text: 'private task'}],
@@ -1251,7 +1336,7 @@ test('owner state and bridge credentials stay private while public pet snapshots
     assert.equal(publicJSON.includes('private-memory-sentinel'), false);
     assert.equal(publicJSON.includes('private-key-sentinel-123456'), false);
     assert.equal(publicJSON.includes(bridge.token), false);
-    assert.equal(JSON.stringify(await shell.invoke(owner, 'companion-state')).includes(bridge.token), false);
+    assert.equal((await shell.invoke(owner, 'companion-state')).bridge.token, bridge.token, 'Only the private owner snapshot restores bridge credentials');
     assert.equal(await shell.invoke(owner, 'export', 'backup'), false);
     assert.equal(shell.saveDialogs.length, 1);
   } finally {

@@ -34,6 +34,13 @@ function string(value, max = LIMITS.text, empty = false) {
   }
   return value.trim();
 }
+function clippedText(value, limit = LIMITS.text) {
+  let end = Math.min(value.length, limit);
+  // Generated prefixes can move a valid surrogate pair across the size limit.
+  if (end < value.length && end > 0 && value.charCodeAt(end - 1) >= 0xd800 && value.charCodeAt(end - 1) <= 0xdbff
+    && value.charCodeAt(end) >= 0xdc00 && value.charCodeAt(end) <= 0xdfff) end--;
+  return value.slice(0, end);
+}
 function identifier(value) {
   const result = string(value, 120);
   if (!/^[a-zA-Z0-9_.:@-]+$/.test(result)) throw new TypeError('无效的标识');
@@ -190,13 +197,13 @@ export function createCompanionEngine(saved = {}, { now = Date.now, id, role = '
   }
   state.routine = routineAt(timeNow());
   function event(kind, action, text, priority = 40, taskId) {
-    const entry = { id: nextId('event'), kind, action, text: text.slice(0, LIMITS.text), priority, ...(taskId ? { taskId } : {}) };
+    const entry = { id: nextId('event'), kind, action, text: clippedText(text), priority, ...(taskId ? { taskId } : {}) };
     emitted.push(entry);
     return entry;
   }
   function notify(kind, action, text, priority, taskId, time) {
     durableRevision++;
-    text = text.slice(0, LIMITS.text);
+    text = clippedText(text);
     const item = { id: nextId('item'), text, ...(taskId ? { taskId } : {}) };
     const current = state.notifications.find(entry => entry.kind === kind && entry.action === action);
     if (current) {

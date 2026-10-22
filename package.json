@@ -1,7 +1,7 @@
 {
   "name": "andromeda-desktop-pet",
   "productName": "Andromeda",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "一款开发中的桌宠",
   "private": true,
   "license": "UNLICENSED",
@@ -15,7 +15,7 @@
     "test": "node --test tests/*.test.cjs tests/*.test.mjs",
     "check": "node scripts/version-info.mjs && node scripts/check.mjs",
     "verify": "npm run check && npm test",
-    "test:ui": "node scripts/ui-test.mjs && node scripts/companion-ui-test.mjs",
+    "test:ui": "node scripts/ui-test.mjs && node scripts/companion-ui-test.mjs && node scripts/companion-state-test.mjs",
     "test:web": "node web/verify-browser.mjs",
     "build:web": "node scripts/version-info.mjs && node scripts/build-web.mjs",
     "build:win": "npm run verify && electron-builder --win zip --x64 --publish never && node scripts/checksums.mjs",

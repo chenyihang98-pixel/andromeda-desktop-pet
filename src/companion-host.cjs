@@ -30,7 +30,11 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
       atomicWrite(filename, engine.serialize());persistenceError = null;savedRevision = engine.revision();savedAt = now();
     } catch {persistenceError = '陪伴记录暂时无法保存，请导出备份并检查磁盘。';}
   }
-  function snapshot() { return {companion: engine?.serialize() || null, assistant: assistant?.snapshot() || null, persistenceError}; }
+  function bridgeState() {
+    const value = !stopped && bridge ? bridge.snapshot() : {running: false, host: '127.0.0.1', port: null, url: null, token: null};
+    return {...value, enabled: value.running};
+  }
+  function snapshot() { return {companion: engine?.serialize() || null, assistant: assistant?.snapshot() || null, bridge: bridgeState(), persistenceError}; }
   function scheduleWake() {
     clearTimer(timer);timer = null;
     if (stopped || !engine) return;
@@ -114,6 +118,8 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
       await ready;checkRunning();const result = update(engine.dispatch(command));
       if (command.type === 'profile.update' && assistant.snapshot().persona !== result.state.profile.persona) {
         await assistant.configure({persona: result.state.profile.persona});if (!stopped) publish({assistant: assistant.snapshot()});
+        // Other commands can commit while the assistant configuration is saved.
+        return {...result, state: engine.serialize(), persistenceError};
       }
       return result;
     },
@@ -162,8 +168,9 @@ function createCompanionHost({directory, safeStorage, publish, emit, capture, op
       bridge ||= require('./services/task-bridge.cjs').createTaskBridge({onEvent: command => {checkRunning();return update(engine.dispatch(command));}});
       if (enabled) await bridge.start(); else await bridge.stop();
       if (stopped) {await bridge.stop();checkRunning();}
-      const result = bridge.snapshot(); return {...result, enabled: result.running};
+      const result = bridgeState();publish({bridge: result});return result;
     },
+    async taskBridgeState() {await ready;return bridgeState();},
     async refresh() {await ready;checkRunning();return update(engine.tick(), engine.revision() !== savedRevision);},
     pause() {if (stopped) return;assistant?.cancel();if (engine && focusActive) update(engine.dispatch({type: 'focus.pause'}));},
     stop() {if (stopped) return;stopped = true;clearTimer(timer);timer = null;assistant?.cancel();if (engine && (focusActive || engine.revision() !== savedRevision)) save();return bridge?.stop().catch(() => {});},

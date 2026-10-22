@@ -91,6 +91,9 @@ function finishDrag(cancelled = false) {
   } catch { /* A hidden/destroyed surface may already have released capture. */ }
   void callAPI(cancelled ? 'cancelDrag' : 'endDrag');
   neutral();
+  // Resume the arbiter only after capture release and the classic timer/frame
+  // have been reset. Nested lostpointercapture cannot resume an action early.
+  window.andromedaEnhancements?.finishDrag?.({pointerId, cancelled, paused: paused()});
 }
 function canGaze() { return ready && !paused() && !dragging && !sequence && !reducedMotion.matches && !window.andromedaEnhancements?.reduced?.(); }
 function globalGaze(point) {

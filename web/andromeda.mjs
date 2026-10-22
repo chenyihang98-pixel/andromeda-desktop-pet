@@ -24,7 +24,7 @@ export function mountAndromeda(options = {}) {
   let drawnFrame = null, gazeBounds = null;
   const downloadUrls = new Set();
   let action = null, drag = null, suppressClick = false, panelOpen = false, autoAvoid = false, tourIndex = -1, gameActive = false;
-  let audioContext = null, lastNotice = 0, schedulerTimer, shownEvent = null;
+  let audioContext = null, audioUnlock = null, lastNotice = 0, schedulerTimer, shownEvent = null;
   let typingCount = 0, typingActive = false, typingIdleTimer, typingPaintTimer;
   let layoutCollapsed = false, layoutOverride = false, layoutTimer, layoutObserver;
   const avoidSelectors = Array.isArray(options.avoidSelectors) ? options.avoidSelectors.filter(selector => typeof selector === 'string' && selector.length <= 200).slice(0, 16) : [];
@@ -178,11 +178,23 @@ export function mountAndromeda(options = {}) {
     };
     step(); return true;
   }
-  function chime() {
+  async function unlockAudio() {
+    if (!preferences.sound || suspended() || !win.navigator.userActivation?.isActive) return false;
+    try {
+      const Audio = win.AudioContext || win.webkitAudioContext; if (!Audio) return false;
+      const context = audioContext ||= new Audio();
+      if (context.state !== 'running') {
+        audioUnlock ||= context.resume().finally(() => { audioUnlock = null; });
+        await audioUnlock;
+      }
+      return !suspended() && preferences.sound && context === audioContext && context.state === 'running';
+    } catch { return false; }
+  }
+  async function chime() {
     if (!preferences.sound || suspended() || !win.navigator.userActivation?.hasBeenActive) return;
     try {
-      const Audio = win.AudioContext || win.webkitAudioContext; if (!Audio) return;
-      audioContext ||= new Audio(); if (audioContext.state !== 'running') return;
+      if (audioContext?.state !== 'running' && !await unlockAudio()) return;
+      if (suspended() || !preferences.sound || audioContext?.state !== 'running') return;
       const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
       oscillator.frequency.setValueAtTime(660, audioContext.currentTime); gain.gain.setValueAtTime(.025, audioContext.currentTime); gain.gain.exponentialRampToValueAtTime(.001, audioContext.currentTime + .18);
       oscillator.connect(gain); gain.connect(audioContext.destination); oscillator.start(); oscillator.stop(audioContext.currentTime + .18);
@@ -209,7 +221,9 @@ export function mountAndromeda(options = {}) {
     pumpEvents(); return result;
   }
   function interaction(kind) { if (preferences.interaction) return handleEvents(engine.dispatch({type: 'interaction', kind})); }
-  function update(patch) { if (destroyed) return; preferences = normalizeWebPreferences({...preferences, ...patch}); save(); engine.dispatch({type: 'preferences.update', patch: {motion: preferences.motion, sound: preferences.sound, reducedMotion: reduced()}}); renderState(); }
+  function syncEnginePreferences() { engine.dispatch({type: 'preferences.update', patch: {motion: preferences.motion, sound: preferences.sound, reducedMotion: reduced(), visualStyle: preferences.visualStyle, theme: preferences.theme}}); }
+  function update(patch) { if (destroyed) return; preferences = normalizeWebPreferences({...preferences, ...patch}); syncEnginePreferences(); save(); renderState(); }
+  function importPreferences(data) { if (!destroyed) update(importWebPreferences(data, preferences)); return exportWebPreferences(preferences); }
   function renderState() {
     if (destroyed) return;
     stopAnimation(); const collapsed = preferences.collapsed || autoAvoid;
@@ -236,7 +250,7 @@ export function mountAndromeda(options = {}) {
     const input = el('input', {type: 'checkbox'}); input.checked = preferences[key];
     listen(input, 'change', async () => {
       update({[key]: input.checked});
-      if (key === 'sound' && input.checked) try { const Audio = win.AudioContext || win.webkitAudioContext; if (Audio) { audioContext ||= new Audio(); await audioContext.resume(); } } catch { input.checked = false; update({sound: false}); }
+      if (key === 'sound' && input.checked) await unlockAudio();
     });
     return el('label', {class: 'setting'}, [el('span', {text: label}), input]);
   }
@@ -262,6 +276,7 @@ export function mountAndromeda(options = {}) {
   function open() {
     if (destroyed || doc.hidden || doc.fullscreenElement || autoAvoid) return;
     if (preferences.collapsed) update({collapsed: false, dock: null});
+    endTour();
     hideBubble(); stopAnimation(); panelOpen = true; panel.hidden = false; canvas.setAttribute('aria-expanded', 'true');
     const close = button('×', () => closePanel()); close.className = 'close'; close.setAttribute('aria-label', '关闭向导面板');
     const current = pageContent(options.pathname || win.location.pathname, content);
@@ -284,7 +299,7 @@ export function mountAndromeda(options = {}) {
         const file = importFile.files?.[0]; if (!file) return;
         if (file.size > 16384) throw new Error('文件过大');
         const text = await file.text(); if (destroyed) return;
-        preferences = importWebPreferences(JSON.parse(text), preferences); save(); open();
+        importPreferences(JSON.parse(text)); open();
       } catch { if (!destroyed) status.textContent = '无法导入：请选择有效的星璇偏好 JSON 文件（不超过 16 KB）。'; }
     });
     const actions = el('div', {class: 'row'}, [button('挥挥手', () => { closePanel(false); interaction('greet'); play('greet'); }), button('摸摸头', () => { closePanel(false); interaction('pet'); play('happy'); }), button('收起', () => update({collapsed: true}))]);
@@ -339,16 +354,18 @@ export function mountAndromeda(options = {}) {
     const step = options.tour[tourIndex], target = targetForStep();
     const message = el('p', {text: cleanText(step.text, 360)});
     panelOpen = true; panel.hidden = false;
+    const next = button(index === options.tour.length - 1 ? '完成导览' : '下一站', () => startTour(index + 1), true);
     panel.replaceChildren(el('span', {class: 'eyebrow', text: `一起逛逛 / ${tourIndex + 1} OF ${options.tour.length}`}), el('h2', {text: cleanText(step.title, 70)}), message,
       el('p', {class: 'muted', text: target ? '高亮区域就是这一站。你仍然可以操作页面。' : '这个入口暂时不在当前页面，可以跳到下一站。'}),
-      el('div', {class: 'row'}, [button(index === options.tour.length - 1 ? '完成导览' : '下一站', () => startTour(index + 1), true), button('结束导览', () => { endTour(); open(); })]));
+      el('div', {class: 'row'}, [next, button('结束导览', () => { endTour(); open(); })]));
     target?.scrollIntoView({behavior: reduced() ? 'instant' : 'smooth', block: 'center'}); positionHighlight(); later(positionHighlight, 350); place();
+    next.focus({preventScroll: true});
   }
   function syncSession() {
     if (destroyed) return null;
     let session = null; try { session = options.getSession?.(); } catch { /* No inferred authentication. */ }
     const user = session?.authenticated === true ? cleanText(session.userId, 128) : null;
-    if (user !== sessionUser) { sessionUser = user; engine = createCompanionEngine({}, {role: user ? 'owner' : 'visitor', timezoneOffsetMinutes: -new Date().getTimezoneOffset()}); scheduler.clear(); shownEvent = null; hideBubble(); }
+    if (user !== sessionUser) { sessionUser = user; engine = createCompanionEngine({}, {role: user ? 'owner' : 'visitor', timezoneOffsetMinutes: -new Date().getTimezoneOffset()}); syncEnginePreferences(); scheduler.clear(); shownEvent = null; hideBubble(); }
     return session;
   }
   function receiveTask(event) {
@@ -403,9 +420,12 @@ export function mountAndromeda(options = {}) {
     if (cell) draw(cell.row, cell.column);
   }, {passive: true});
   const playingMedia = new Set();
-  const checkInput = () => {
+  const inputNeedsSpace = () => {
     const focused = doc.activeElement;
-    const next = playingMedia.size > 0 || (!!focused && focused !== host && (focused.matches?.('iframe,input:not([type=button]):not([type=submit]),textarea,select,[contenteditable]:not([contenteditable=false])') || focused.isContentEditable));
+    return playingMedia.size > 0 || (!!focused && focused !== host && (focused.matches?.('iframe,input:not([type=button]):not([type=submit]),textarea,select,[contenteditable]:not([contenteditable=false])') || focused.isContentEditable));
+  };
+  const checkInput = () => {
+    const next = inputNeedsSpace();
     if (next !== autoAvoid) { autoAvoid = next; renderState(); }
   };
   // Deliberately receives no event: the feedback never reads key, code, data,
@@ -419,6 +439,9 @@ export function mountAndromeda(options = {}) {
     typingIdleTimer = later(stopTyping, 1400);
   });
   listen(doc, 'focusin', checkInput); listen(doc, 'focusout', () => later(checkInput, 0));
+  // Returning to the foreground alone stays silent. A trusted gesture can unlock
+  // an opted-in context; pending unlocks are rechecked after visibility/destruction.
+  for (const type of ['pointerdown', 'keydown']) listen(doc, type, event => { if (event.isTrusted) void unlockAudio(); }, {capture: true});
   listen(win, 'blur', () => later(checkInput, 0));
   listen(win, 'focus', () => later(checkInput, 0));
   listen(doc, 'pointerup', () => later(checkInput, 0));
@@ -466,12 +489,12 @@ export function mountAndromeda(options = {}) {
       canvas.dataset.assetState = 'ready'; place(); draw(); scheduleIdle();
     } catch (error) { if (!destroyed) { canvas.dataset.assetState = 'fallback'; options.onError?.({code: 'ASSET_UNAVAILABLE', message: error.message}); } }
   })();
-  renderState();
+  autoAvoid = inputNeedsSpace(); syncEnginePreferences(); renderState();
   return Object.freeze({
     ready, open, play, say, receiveTask, refreshSession: syncSession,
     collapse: () => update({collapsed: true}), restore: () => update({collapsed: false, dock: null}),
     getPreferences: () => ({...preferences}), exportPreferences: () => exportWebPreferences(preferences),
-    importPreferences: data => { if (!destroyed) { preferences = importWebPreferences(data, preferences); save(); renderState(); } return exportWebPreferences(preferences); },
+    importPreferences,
     destroy() {
       if (destroyed) return;
       destroyed = true; abort.abort(); layoutObserver?.disconnect();

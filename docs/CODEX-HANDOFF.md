@@ -1,8 +1,8 @@
 # Andromeda: continuation brief for Codex
 
-## Current continuation point: 0.3.1, 2026-10-22
+## Current continuation point: 0.3.2, 2026-10-22
 
-The source now includes the desktop companion workspace, optional assistant/voice/tools, local backup restoration, bounded task bridge and CLI adapter, movement/music, visible progression, custom character ZIP editor/importer, and a shared website SDK. Read `IMPLEMENTATION-STATUS.md` for all 54 items, `PERFORMANCE-0.3.1.md` for the resource/code audit and `VALIDATION-0.3.1.md` for current validation. Twenty items have their documented baseline loop complete; many extensions and production conditions remain incomplete. Do not call the entire roadmap complete.
+The source now includes the desktop companion workspace, optional assistant/voice/tools, local backup restoration, bounded task bridge and CLI adapter, movement/music, visible progression, custom character ZIP editor/importer, and a shared website SDK. Read `IMPLEMENTATION-STATUS.md` for all 54 items, `PERFORMANCE-0.3.1.md` for the resource/code audit and `VALIDATION-0.3.2.md` for the 13 fixes and current validation. Twenty items have their documented baseline loop complete; many extensions and production conditions remain incomplete. Do not call the entire roadmap complete.
 
 The website integration belongs to the existing website source and a separate feature branch; do not replace the site with a new project. The public v0.2.0 release remains unchanged. Source push, local build, Release creation and website deployment are separate actions. Preserve the original atlas hash and the user's files. New Studio sheets are static references and are not complete continuous animations. The owner authorized implementing and pushing this work; do not let the historical scope below override that later instruction.
 
